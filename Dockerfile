@@ -5,6 +5,7 @@ FROM golang:1.25-alpine AS build
 WORKDIR /src
 COPY go.mod ./
 COPY *.go ./
+COPY assets ./assets
 RUN CGO_ENABLED=0 go build -trimpath -ldflags=-s\ -w -o /out/opbroker .
 
 # --- fetch the official 1Password CLI, SHA-256 pinned ---
