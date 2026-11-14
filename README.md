@@ -21,13 +21,16 @@
 
 ## 構成
 
-- サーバー: muse-agent コンテナ（systemd `op-broker.service`、
-  `/opt/op-broker/opbroker serve --listen :18787 --op /usr/bin/op`）
-  - 到達経路: Tailscale `http://100.74.95.119:18787` / 自宅 infra
-    `http://10.24.0.31:18787`。インターネットには出していない。
-  - Admin token は起動ごとに生成され journal に一度だけ出る:
-    `journalctl -u op-broker | grep "ADMIN TOKEN"`
-  - op CLI は公式 apt リポジトリから導入済み（2.42.0）。
+- サーバー: talos-baremetal クラスタに GitOps でデプロイ
+  （k8s-manifests `apps/op-broker/`、ns `op-broker`）。Pod は
+  initContainer でこの repo のリリースバイナリと公式 op CLI を
+  SHA-256 検証つきで取得して起動する（クラスタに private registry が
+  ないための altkeeper と同じパターン）。状態は Pod のメモリのみで、
+  PVC は使わない。
+  - 到達経路: LoadBalancer `http://10.24.0.202:18787`（infra net のみ、
+    インターネットには出していない）
+  - Admin token は Pod 起動ごとに生成され Pod ログに一度だけ出る:
+    `kubectl -n op-broker logs deploy/op-broker | grep "ADMIN TOKEN"`
 - クライアント: 同一バイナリ。Mac は `~/.local/bin/opbroker`
   (darwin/arm64 ビルド)。
 
@@ -44,7 +47,7 @@
 クライアント（Mac）:
 
 ```sh
-export BROKER_SERVER=http://100.74.95.119:18787
+export BROKER_SERVER=http://10.24.0.202:18787
 eval $(opbroker request --name macbook-pro --reason "作業名" \
         op://Automation/demo/password)
 # 表示される6桁コードをダッシュボードで照合して承認すると進む
