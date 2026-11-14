@@ -54,6 +54,14 @@ type accessRequest struct {
 	CreatedAt    time.Time
 	Status       reqStatus
 	GrantID      string
+
+	// Kind is "access" for a fresh grant or "renew" for a lifetime
+	// extension of an existing grant (RenewGrantID). Renewals go
+	// through the same pending/approval machinery — approval is
+	// always the owner's — but approving one extends the existing
+	// grant instead of minting a new ticket.
+	Kind         string
+	RenewGrantID string
 }
 
 type grant struct {
@@ -299,6 +307,77 @@ func (s *server) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRenew creates a pending renewal for the caller's existing
+// grant: POST /api/renew with the ticket as bearer. The grant must
+// exist and not be revoked; it may be active or recently expired
+// (24h grace) — renewing an expired grant is the main use, since a
+// fresh request would also replace the ticket the agent holds. The
+// renewal then waits for the owner's approval exactly like a fresh
+// request; approving extends the SAME grant (same ticket).
+func (s *server) handleRenew(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ticket, ok := s.bearerTicket(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing ticket"})
+		return
+	}
+	var body struct {
+		TTLSeconds int `json:"ttl_seconds"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body)
+	ttl := time.Duration(body.TTLSeconds) * time.Second
+	if ttl <= 0 || ttl > 24*time.Hour {
+		ttl = time.Hour
+	}
+	th := ticketHash(ticket)
+	now := time.Now()
+	s.mu.Lock()
+	g, ok := s.grantByTkt[th]
+	if !ok || g.Revoked {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no grant for this ticket"})
+		return
+	}
+	if now.After(g.ExpiresAt.Add(24 * time.Hour)) {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusGone, map[string]string{"error": "grant expired more than 24h ago; request a new grant"})
+		return
+	}
+	// One live renewal per grant: a re-renew supersedes the old one.
+	for _, old := range s.requests {
+		if old.Kind == "renew" && old.RenewGrantID == g.ID && old.Status == stPending {
+			old.Status = stExpired
+		}
+	}
+	req := &accessRequest{
+		ID:           randHex(4),
+		TicketHash:   th,
+		Code:         pairingCode(th),
+		ClientName:   g.ClientName,
+		SourceIP:     sourceIP(r),
+		Reason:       "grant renewal",
+		Scopes:       g.Scopes,
+		RequestedTTL: ttl,
+		CreatedAt:    now,
+		Status:       stPending,
+		Kind:         "renew",
+		RenewGrantID: g.ID,
+	}
+	s.requests[req.ID] = req
+	s.byTicket[th] = req
+	s.mu.Unlock()
+	log.Printf("renewal requested %s for grant %s client=%q code=%s", req.ID, g.ID, g.ClientName, req.Code)
+	go s.notifyNewRequest(req)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"request_id": req.ID,
+		"code":       req.Code,
+		"expires_at": now.Add(pendingTTL).Format(time.RFC3339),
+	})
+}
+
 func (s *server) bearerTicket(r *http.Request) (string, bool) {
 	h := r.Header.Get("Authorization")
 	if !strings.HasPrefix(h, "Bearer ") {
@@ -334,14 +413,15 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"status": string(req.Status), "request_id": req.ID}
-	if req.Status == stApproved {
-		if g, ok := s.grantByTkt[th]; ok {
-			resp["grant_expires_at"] = g.ExpiresAt.Format(time.RFC3339)
-			resp["reads_left"] = g.ReadsLeft
-			resp["scopes"] = g.Scopes
-			if !g.active(now) {
-				resp["status"] = "expired"
-			}
+	// Grant facts are reported whenever a grant exists for the ticket —
+	// including while a renewal is pending, so the renewing client can
+	// watch the expiry advance when the renewal is approved.
+	if g, ok := s.grantByTkt[th]; ok {
+		resp["grant_expires_at"] = g.ExpiresAt.Format(time.RFC3339)
+		resp["reads_left"] = g.ReadsLeft
+		resp["scopes"] = g.Scopes
+		if !g.active(now) && req.Status != stPending {
+			resp["status"] = "expired"
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -688,6 +768,22 @@ func (s *server) handleApprove(w http.ResponseWriter, r *http.Request, sess *adm
 		http.Error(w, "request not pending", http.StatusConflict)
 		return
 	}
+	if req.Kind == "renew" {
+		g, ok := s.grants[req.RenewGrantID]
+		if !ok || g.Revoked {
+			http.Error(w, "grant no longer exists", http.StatusConflict)
+			return
+		}
+		g.ExpiresAt = now.Add(ttl)
+		if reads > g.ReadsLeft {
+			g.ReadsLeft = reads
+		}
+		req.Status = stApproved
+		req.GrantID = g.ID
+		log.Printf("renewed grant %s client=%q until %s reads=%d", g.ID, g.ClientName, g.ExpiresAt.Format(time.RFC3339), g.ReadsLeft)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
 	g := &grant{
 		ID:         randHex(4),
 		TicketHash: req.TicketHash,
@@ -715,6 +811,41 @@ func (s *server) handleDeny(w http.ResponseWriter, r *http.Request, sess *adminS
 		req.Status = stDenied
 		log.Printf("denied request %s", req.ID)
 	}
+	s.mu.Unlock()
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleGrantAddScope widens a live grant after the fact: the owner
+// pastes one more reference into the grant's scope list from the
+// dashboard, so a client that discovers mid-task it needs another
+// field does not need a whole new request/approval round (which
+// would also replace the ticket the local agent holds). The change
+// is owner-only, validated like a request scope, and audited.
+func (s *server) handleGrantAddScope(w http.ResponseWriter, r *http.Request, sess *adminSession) {
+	if r.Method != http.MethodPost || !s.checkCSRF(r, sess) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	scope := strings.TrimSpace(r.FormValue("scope"))
+	if !validScope(scope) {
+		http.Error(w, "invalid scope reference", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	g, ok := s.grants[r.FormValue("grant_id")]
+	if !ok || !g.active(time.Now()) {
+		s.mu.Unlock()
+		http.Error(w, "grant not found or not active", http.StatusBadRequest)
+		return
+	}
+	if scopeMatches(g.Scopes, scope) {
+		s.mu.Unlock()
+		http.Redirect(w, r, "/", http.StatusSeeOther) // already covered; no-op
+		return
+	}
+	g.Scopes = append(g.Scopes, scope)
+	s.audit = append(s.audit, auditEntry{At: time.Now(), Client: g.ClientName, Ref: scope, Result: "scope-added"})
+	log.Printf("scope added to grant %s client=%q: %s", g.ID, g.ClientName, scope)
 	s.mu.Unlock()
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -819,7 +950,7 @@ select,input[type=number]{min-height:44px}
 {{if .Pending}}
 <table><tr><th>コード</th><th>クライアント</th><th>scope / 理由</th><th>申請TTL</th><th>承認</th></tr>
 {{range .Pending}}<tr>
-<td><b style="font-size:1.3em">{{.Code}}</b><br><span class="small">{{.ID}}</span></td>
+<td><b style="font-size:1.3em">{{.Code}}</b><br><span class="small">{{.ID}}</span>{{if eq .Kind "renew"}}<br><b>更新（renew）</b>{{end}}</td>
 <td>{{.ClientName}}<br><span class="small">{{.Host}}<br>src: {{.SourceIP}}</span></td>
 <td>{{range .Scopes}}<code>{{.}}</code><br>{{end}}<span class="small">{{.Reason}}</span></td>
 <td>{{.RequestedTTL}}</td>
@@ -837,7 +968,11 @@ select,input[type=number]{min-height:44px}
 <h2>有効な grant</h2>
 {{if .Grants}}
 <table><tr><th>クライアント</th><th>scope</th><th>期限</th><th>残り読取</th><th></th></tr>
-{{range .Grants}}<tr><td>{{.ClientName}}<br><span class="small">src: {{.SourceIP}}</span></td><td>{{range .Scopes}}<code>{{.}}</code><br>{{end}}</td>
+{{range .Grants}}<tr><td>{{.ClientName}}<br><span class="small">src: {{.SourceIP}}</span></td><td>{{range .Scopes}}<code>{{.}}</code><br>{{end}}
+<form method="post" action="/grant/add-scope" style="margin-top:.4em"><input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="grant_id" value="{{.ID}}">
+<input type="text" name="scope" size="30" placeholder="op://Vault/Item/field" autocomplete="off">
+<button type="submit" class="btn">scope追加</button></form></td>
 <td>{{.ExpiresAt.Format "15:04:05"}}</td><td>{{.ReadsLeft}}</td>
 <td><form method="post" action="/revoke"><input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="grant_id" value="{{.ID}}"><button type="submit" class="btn">失効</button></form></td></tr>{{end}}</table>
@@ -953,6 +1088,7 @@ func (s *server) routes() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": state})
 	})
 	mux.HandleFunc("/api/requests", s.handleCreateRequest)
+	mux.HandleFunc("/api/renew", s.handleRenew)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/read", s.handleRead)
 	mux.HandleFunc("/api/describe", s.handleDescribe)
@@ -973,6 +1109,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/approve", admin(s.handleApprove))
 	mux.HandleFunc("/deny", admin(s.handleDeny))
 	mux.HandleFunc("/revoke", admin(s.handleRevoke))
+	mux.HandleFunc("/grant/add-scope", admin(s.handleGrantAddScope))
 	mux.HandleFunc("/push/register", admin(s.handlePushRegister))
 	mux.HandleFunc("/push/unregister", admin(s.handlePushUnregister))
 	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)

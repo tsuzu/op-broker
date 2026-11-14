@@ -160,6 +160,9 @@ func (s *server) notifyNewRequest(req *accessRequest) {
 		return
 	}
 	title := "op-broker: 承認リクエスト"
+	if req.Kind == "renew" {
+		title = "op-broker: 更新リクエスト"
+	}
 	body := fmt.Sprintf("%s (%s): %s", req.ClientName, req.Host, strings.Join(req.Scopes, ", "))
 	if req.Reason != "" {
 		body += " / " + req.Reason

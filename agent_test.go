@@ -30,18 +30,18 @@ func TestAgentStoreGetForget(t *testing.T) {
 		t.Fatalf("expected no ticket initially, got %q", got)
 	}
 	exp := time.Now().Add(time.Hour)
-	if err := storeToAgent("ticket-abc", exp); err != nil {
+	if err := storeToAgent("ticket-abc", []string{"op://Vault"}, exp); err != nil {
 		t.Fatalf("store: %v", err)
 	}
 	if got := agentTicket(); got != "ticket-abc" {
 		t.Fatalf("agentTicket = %q, want ticket-abc", got)
 	}
-	// A second store replaces the first (latest grant wins).
-	if err := storeToAgent("ticket-def", exp); err != nil {
+	// Re-storing the SAME ticket replaces its entry (e.g. after renew).
+	if err := storeToAgent("ticket-abc", []string{"op://Vault", "op://Other"}, exp); err != nil {
 		t.Fatalf("store 2: %v", err)
 	}
-	if got := agentTicket(); got != "ticket-def" {
-		t.Fatalf("agentTicket after replace = %q, want ticket-def", got)
+	if n := len(agentTickets()); n != 1 {
+		t.Fatalf("entries after same-ticket re-store = %d, want 1", n)
 	}
 	resp, err := agentCall(agentReq{Op: "forget"})
 	if err != nil || !resp.OK {
@@ -52,9 +52,50 @@ func TestAgentStoreGetForget(t *testing.T) {
 	}
 }
 
+func TestAgentMultipleGrantsResolveByScope(t *testing.T) {
+	startTestAgent(t)
+	long := time.Now().Add(2 * time.Hour)
+	short := time.Now().Add(time.Hour)
+	if err := storeToAgent("ticket-milldea", []string{"op://milldea"}, long); err != nil {
+		t.Fatal(err)
+	}
+	if err := storeToAgent("ticket-other", []string{"op://OtherVault"}, short); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(agentTickets()); n != 2 {
+		t.Fatalf("held tickets = %d, want 2", n)
+	}
+	if got := agentResolve("op://milldea/SMMR stg/?attribute=otp"); got != "ticket-milldea" {
+		t.Fatalf("resolve milldea ref = %q", got)
+	}
+	if got := agentResolve("op://OtherVault/Item/field"); got != "ticket-other" {
+		t.Fatalf("resolve other ref = %q", got)
+	}
+	if got := agentResolve("op://Unrelated/Item/field"); got != "" {
+		t.Fatalf("resolve unrelated ref = %q, want empty", got)
+	}
+	// No ref: the latest-expiring entry wins.
+	if got := agentTicket(); got != "ticket-milldea" {
+		t.Fatalf("agentTicket = %q, want ticket-milldea (latest expiry)", got)
+	}
+	if n := len(agentList()); n != 2 {
+		t.Fatalf("agentList = %d entries, want 2", n)
+	}
+	// Forgetting by scope drops only the covering entries.
+	if _, err := agentCall(agentReq{Op: "forget", Ref: "op://milldea/SMMR stg/?attribute=otp"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentResolve("op://milldea"); got != "" {
+		t.Fatalf("milldea entry survived scoped forget: %q", got)
+	}
+	if got := agentResolve("op://OtherVault/Item/field"); got != "ticket-other" {
+		t.Fatalf("other entry lost by scoped forget: %q", got)
+	}
+}
+
 func TestAgentExpiredTicketDropped(t *testing.T) {
 	startTestAgent(t)
-	if err := storeToAgent("ticket-old", time.Now().Add(-time.Minute)); err != nil {
+	if err := storeToAgent("ticket-old", []string{"op://Vault"}, time.Now().Add(-time.Minute)); err != nil {
 		t.Fatalf("store: %v", err)
 	}
 	if got := agentTicket(); got != "" {
@@ -81,7 +122,7 @@ func TestResolveTicketEnvWins(t *testing.T) {
 func TestResolveTicketFallsBackToAgent(t *testing.T) {
 	startTestAgent(t)
 	t.Setenv("BROKER_TICKET", "")
-	if err := storeToAgent("agent-ticket", time.Now().Add(time.Hour)); err != nil {
+	if err := storeToAgent("agent-ticket", []string{"op://Vault"}, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("store: %v", err)
 	}
 	if got := resolveTicket(); got != "agent-ticket" {

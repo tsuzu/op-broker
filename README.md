@@ -75,11 +75,37 @@ opbroker status
 opbroker request --agent --name codex --reason "作業名" op://Automation
 # 6桁コードをダッシュボードで承認するだけ
 opbroker read op://Automation/demo/password   # env 不要
+opbroker agent --list     # 保持中の grant（メタデータのみ）
 opbroker agent --forget   # 手動でチケットを捨てる
 opbroker agent --stop     # エージェント終了
 ```
 
 `$BROKER_TICKET` が設定されていればそちらが優先される。
+
+エージェントは **複数の grant を同時に保持できる**。別の scope で
+`request --agent` しても既存のチケットは消えず、`read` / `describe`
+は参照をカバーする grant のチケットを自動で選ぶ。`status` は保持中の
+全 grant を表示する。
+
+### 更新（renew）
+
+grant の期限が切れた（または切れそうな）ときは、新規リクエストでは
+なく更新ができる。チケットは同じものが使われ続け、エージェントの
+預かりもそのまま。承認は新規リクエストとまったく同じ（ダッシュ
+ボード＋プッシュ通知）。失効から24時間を過ぎた grant は更新できない。
+
+```sh
+opbroker renew                 # エージェント保持が1件ならそれを更新
+opbroker renew op://milldea    # カバーする grant を指定して更新
+opbroker renew --ttl 2h        # 延長幅の希望（最終決定は承認時）
+```
+
+### スコープの後追加（オーナー操作）
+
+ダッシュボードの有効な grant 一覧から、各 grant にスコープ参照を
+後から追加できる（監査ログに `scope-added` として記録）。範囲外の
+参照で `denied-scope` になったクライアントを、再リクエストなしに
+救済するためのオーナー操作。
 
 フィールド参照の探索（describe）:
 アイテムのフィールド名（特に TOTP のラベル）が分からないときは、

@@ -187,7 +187,7 @@ func cmdRequest(args []string) error {
 					if perr != nil {
 						exp = time.Now().Add(ttl)
 					}
-					if err := storeToAgent(ticket, exp); err != nil {
+					if err := storeToAgent(ticket, st.Scopes, exp); err != nil {
 						return fmt.Errorf("approved, but handing the ticket to the local agent failed: %w", err)
 					}
 					fmt.Fprintf(os.Stderr, "承認されました。有効期限: %s（残り読取 %d 回）\nチケットはローカルエージェントに預けました。以後の `opbroker read` / `opbroker status` はそのまま使えます。\n", st.GrantExpires, st.ReadsLeft)
@@ -222,12 +222,12 @@ func cmdRead(args []string) error {
 	if server == "" {
 		server = os.Getenv("BROKER_SERVER")
 	}
-	ticket := resolveTicket()
-	if ticket == "" {
-		return fmt.Errorf("no ticket: set BROKER_TICKET or run `opbroker request --agent ...` first")
-	}
 	if ref == "" {
 		return fmt.Errorf("a secret reference op://Vault/Item/field is required")
+	}
+	ticket, _ := resolveTicketForRef(ref)
+	if ticket == "" {
+		return fmt.Errorf("no ticket covers %s: set BROKER_TICKET or run `opbroker request --agent ...` first", ref)
 	}
 	c := newClient(server, ticket)
 	code, data, err := c.doJSON(http.MethodPost, "/api/read", map[string]string{"ref": ref}, true)
@@ -266,9 +266,9 @@ func cmdDescribe(args []string) error {
 	if ref == "" {
 		return fmt.Errorf("an item reference op://Vault/Item is required")
 	}
-	ticket := resolveTicket()
+	ticket, _ := resolveTicketForRef(ref)
 	if ticket == "" {
-		return fmt.Errorf("no ticket: set BROKER_TICKET or run `opbroker request --agent ...` first")
+		return fmt.Errorf("no ticket covers %s: set BROKER_TICKET or run `opbroker request --agent ...` first", ref)
 	}
 	c := newClient(server, ticket)
 	code, data, err := c.doJSON(http.MethodPost, "/api/describe", map[string]string{"ref": ref}, true)
@@ -308,6 +308,8 @@ func cmdDescribe(args []string) error {
 }
 
 // cmdStatus implements: opbroker status --server URL
+// With $BROKER_TICKET it reports that grant; otherwise it reports
+// every grant the local agent holds.
 func cmdStatus(args []string) error {
 	server := os.Getenv("BROKER_SERVER")
 	for i := 0; i < len(args); i++ {
@@ -316,21 +318,136 @@ func cmdStatus(args []string) error {
 			server = args[i]
 		}
 	}
-	ticket := resolveTicket()
-	if ticket == "" {
+	printStatus := func(ticket string) error {
+		c := newClient(server, ticket)
+		st, code, err := c.status()
+		if err != nil {
+			return err
+		}
+		if code != http.StatusOK {
+			return fmt.Errorf("status failed (%d): %s", code, st.Error)
+		}
+		fmt.Printf("status: %s\n", st.Status)
+		if st.GrantExpires != "" {
+			fmt.Printf("grant_expires_at: %s\nreads_left: %d\nscopes: %s\n", st.GrantExpires, st.ReadsLeft, strings.Join(st.Scopes, ", "))
+		}
+		return nil
+	}
+	if t := os.Getenv("BROKER_TICKET"); t != "" {
+		return printStatus(t)
+	}
+	tickets := agentTickets()
+	if len(tickets) == 0 {
 		return fmt.Errorf("no ticket: set BROKER_TICKET or run `opbroker request --agent ...` first")
 	}
+	for i, t := range tickets {
+		if i > 0 {
+			fmt.Println("---")
+		}
+		if err := printStatus(t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cmdRenew implements: opbroker renew [--server URL] [--ttl 1h]
+// [--wait 10m] [op://scope-or-ref]
+// It asks the owner to extend the lifetime of an existing grant —
+// the same ticket keeps working; no new ticket is issued. The target
+// grant is chosen by $BROKER_TICKET, by the agent entry covering the
+// given reference, or by the agent's only entry. Approval is required
+// exactly as for a fresh request (dashboard + push notification).
+func cmdRenew(args []string) error {
+	var server, target string
+	var ttl, wait time.Duration = time.Hour, 10 * time.Minute
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--server":
+			i++
+			server = args[i]
+		case "--ttl":
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil {
+				return err
+			}
+			ttl = d
+		case "--wait":
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil {
+				return err
+			}
+			wait = d
+		default:
+			target = args[i]
+		}
+	}
+	if server == "" {
+		server = os.Getenv("BROKER_SERVER")
+	}
+	var ticket string
+	fromAgent := false
+	if t := os.Getenv("BROKER_TICKET"); t != "" {
+		ticket = t
+	} else if target != "" {
+		ticket, fromAgent = resolveTicketForRef(target)
+		if ticket == "" {
+			return fmt.Errorf("the agent holds no grant covering %s", target)
+		}
+	} else if infos := agentList(); len(infos) == 1 {
+		ticket = agentResolve("")
+		fromAgent = ticket != ""
+	} else if len(infos) == 0 {
+		return fmt.Errorf("no grant to renew: run `opbroker request --agent ...` first")
+	} else {
+		return fmt.Errorf("the agent holds %d grants; name the one to renew by a scope it covers, e.g. `opbroker renew op://Vault`", len(infos))
+	}
+	if ticket == "" {
+		return fmt.Errorf("could not resolve a ticket to renew")
+	}
 	c := newClient(server, ticket)
-	st, code, err := c.status()
+	before, _, err := c.status()
 	if err != nil {
 		return err
 	}
-	if code != http.StatusOK {
-		return fmt.Errorf("status failed (%d): %s", code, st.Error)
+	oldExpiry := before.GrantExpires
+	code, data, err := c.doJSON(http.MethodPost, "/api/renew", map[string]any{"ttl_seconds": int(ttl.Seconds())}, true)
+	if err != nil {
+		return err
 	}
-	fmt.Printf("status: %s\n", st.Status)
-	if st.GrantExpires != "" {
-		fmt.Printf("grant_expires_at: %s\nreads_left: %d\nscopes: %s\n", st.GrantExpires, st.ReadsLeft, strings.Join(st.Scopes, ", "))
+	if code != http.StatusCreated {
+		return fmt.Errorf("renew failed (%d): %s", code, data)
 	}
-	return nil
+	var resp struct {
+		RequestID string `json:"request_id"`
+		Code      string `json:"code"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "renewal %s created for scopes %s\n", resp.RequestID, strings.Join(before.Scopes, ", "))
+	fmt.Fprintf(os.Stderr, "\n  確認コード: %s\n\n", resp.Code)
+	fmt.Fprintf(os.Stderr, "ダッシュボードでこのコードを承認してください。承認を待ちます（最大 %s）...\n", wait)
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		st, _, err := c.status()
+		if err == nil {
+			if st.Status == "denied" {
+				return fmt.Errorf("renewal was denied")
+			}
+			if st.GrantExpires != "" && st.GrantExpires != oldExpiry {
+				if exp, perr := time.Parse(time.RFC3339, st.GrantExpires); perr == nil && time.Now().Before(exp) {
+					if fromAgent {
+						_ = storeToAgent(ticket, st.Scopes, exp) // refresh the entry's expiry
+					}
+					fmt.Fprintf(os.Stderr, "更新されました。新しい有効期限: %s（残り読取 %d 回）\n", st.GrantExpires, st.ReadsLeft)
+					return nil
+				}
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("timed out waiting for renewal approval")
 }

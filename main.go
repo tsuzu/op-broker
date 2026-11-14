@@ -39,6 +39,8 @@ func main() {
 		err = cmdDescribe(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
+	case "renew":
+		err = cmdRenew(os.Args[2:])
 	case "agent":
 		err = cmdAgent(os.Args[2:])
 	default:
@@ -152,5 +154,6 @@ func usage() {
   opbroker read    [--server URL] op://Vault/Item/field     (ticket from $BROKER_TICKET or the local agent)
   opbroker describe [--server URL] op://Vault/Item          (field structure, metadata only)
   opbroker status  [--server URL]                           (ticket from $BROKER_TICKET or the local agent)
-  opbroker agent   [--stop|--forget]                        (local ticket daemon; started automatically by request --agent)`)
+  opbroker renew   [--server URL] [--ttl 1h] [--wait 10m] [op://scope]   (extend a grant's life; owner approval required)
+  opbroker agent   [--stop|--forget|--list]                 (local ticket daemon; started automatically by request --agent)`)
 }
