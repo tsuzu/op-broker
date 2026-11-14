@@ -47,6 +47,7 @@ type accessRequest struct {
 	Code         string // 6-digit pairing code derived from the ticket hash
 	ClientName   string
 	Host         string
+	SourceIP     string // observed source IP (via the proxy's X-Forwarded-For when loopback)
 	Reason       string
 	Scopes       []string
 	RequestedTTL time.Duration
@@ -59,6 +60,7 @@ type grant struct {
 	ID         string
 	TicketHash string
 	ClientName string
+	SourceIP   string
 	Scopes     []string
 	ExpiresAt  time.Time
 	ReadsLeft  int
@@ -253,6 +255,7 @@ func (s *server) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 		Code:         pairingCode(body.TicketHash),
 		ClientName:   truncate(body.ClientName, 64),
 		Host:         truncate(body.Host, 128),
+		SourceIP:     sourceIP(r),
 		Reason:       truncate(body.Reason, 256),
 		Scopes:       body.Scopes,
 		RequestedTTL: ttl,
@@ -267,7 +270,7 @@ func (s *server) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 	s.requests[req.ID] = req
 	s.byTicket[req.TicketHash] = req
 	s.mu.Unlock()
-	log.Printf("request %s from client=%q host=%q scopes=%d code=%s", req.ID, req.ClientName, req.Host, len(req.Scopes), req.Code)
+	log.Printf("request %s from client=%q host=%q src=%s scopes=%d code=%s", req.ID, req.ClientName, req.Host, req.SourceIP, len(req.Scopes), req.Code)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"request_id": req.ID,
 		"code":       req.Code,
@@ -461,6 +464,26 @@ func (s *server) adminAuth(w http.ResponseWriter, r *http.Request) (*adminSessio
 	return nil, false
 }
 
+// sourceIP returns the best-known client IP for display and audit: when
+// the direct peer is loopback (the oauth2-proxy sidecar), it is the
+// first X-Forwarded-For entry the proxy recorded; otherwise it is the
+// direct peer address. X-Forwarded-For from a non-loopback peer is
+// never trusted.
+func sourceIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if isLoopbackRemote(r.RemoteAddr) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+				return first
+			}
+		}
+	}
+	return host
+}
+
 func isLoopbackRemote(remoteAddr string) bool {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
@@ -564,6 +587,7 @@ func (s *server) handleApprove(w http.ResponseWriter, r *http.Request, sess *adm
 		ID:         randHex(4),
 		TicketHash: req.TicketHash,
 		ClientName: req.ClientName,
+		SourceIP:   req.SourceIP,
 		Scopes:     req.Scopes,
 		ExpiresAt:  now.Add(ttl),
 		ReadsLeft:  reads,
@@ -632,7 +656,7 @@ input,select,textarea{font-size:1em} .small{color:#666;font-size:.85em}</style><
 <table><tr><th>コード</th><th>クライアント</th><th>scope / 理由</th><th>申請TTL</th><th>承認</th></tr>
 {{range .Pending}}<tr>
 <td><b style="font-size:1.3em">{{.Code}}</b><br><span class="small">{{.ID}}</span></td>
-<td>{{.ClientName}}<br><span class="small">{{.Host}}</span></td>
+<td>{{.ClientName}}<br><span class="small">{{.Host}}<br>src: {{.SourceIP}}</span></td>
 <td>{{range .Scopes}}<code>{{.}}</code><br>{{end}}<span class="small">{{.Reason}}</span></td>
 <td>{{.RequestedTTL}}</td>
 <td><form method="post" action="/approve"><input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -649,7 +673,7 @@ input,select,textarea{font-size:1em} .small{color:#666;font-size:.85em}</style><
 <h2>有効な grant</h2>
 {{if .Grants}}
 <table><tr><th>クライアント</th><th>scope</th><th>期限</th><th>残り読取</th><th></th></tr>
-{{range .Grants}}<tr><td>{{.ClientName}}</td><td>{{range .Scopes}}<code>{{.}}</code><br>{{end}}</td>
+{{range .Grants}}<tr><td>{{.ClientName}}<br><span class="small">src: {{.SourceIP}}</span></td><td>{{range .Scopes}}<code>{{.}}</code><br>{{end}}</td>
 <td>{{.ExpiresAt.Format "15:04:05"}}</td><td>{{.ReadsLeft}}</td>
 <td><form method="post" action="/revoke"><input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="grant_id" value="{{.ID}}"><button type="submit">失効</button></form></td></tr>{{end}}</table>
