@@ -8,13 +8,14 @@ import (
 
 func TestProxyHeaderAuth(t *testing.T) {
 	s := newServer(defaultMockBackend(), true, testAdmin)
-	s.trustProxyHeader = "X-Auth-Request-User"
+	s.trustProxyHeader = "X-Forwarded-User,X-Auth-Request-User"
 
 	mkReq := func(remote, user string) *http.Request {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr = remote
 		if user != "" {
-			r.Header.Set("X-Auth-Request-User", user)
+			// oauth2-proxy passes the identity upstream in this header.
+			r.Header.Set("X-Forwarded-User", user)
 		}
 		return r
 	}

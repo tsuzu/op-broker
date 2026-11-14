@@ -396,9 +396,20 @@ func (s *server) adminAuth(w http.ResponseWriter, r *http.Request) (*adminSessio
 	// Proxy-header path: a same-netns authenticating proxy (oauth2-proxy
 	// sidecar) asserts the user in a header. Only loopback peers may use
 	// it, and the dashboard gets a stable server-side session so its CSRF
-	// tokens work unchanged.
+	// tokens work unchanged. trustProxyHeader may name several headers
+	// (comma-separated); the first one present wins. oauth2-proxy sends
+	// the identity upstream as X-Forwarded-User (pass_user_headers) and
+	// exposes X-Auth-Request-User only in auth-request mode, so accept
+	// both.
 	if s.trustProxyHeader != "" && isLoopbackRemote(r.RemoteAddr) {
-		if user := r.Header.Get(s.trustProxyHeader); user != "" {
+		user := ""
+		for _, h := range strings.Split(s.trustProxyHeader, ",") {
+			if v := r.Header.Get(strings.TrimSpace(h)); v != "" {
+				user = v
+				break
+			}
+		}
+		if user != "" {
 			key := "proxy:" + user
 			s.mu.Lock()
 			defer s.mu.Unlock()
