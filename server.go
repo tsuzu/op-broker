@@ -859,8 +859,38 @@ func (s *server) handleRevoke(w http.ResponseWriter, r *http.Request, sess *admi
 	if g, ok := s.grants[r.FormValue("grant_id")]; ok {
 		g.Revoked = true
 		log.Printf("revoked grant %s client=%q", g.ID, g.ClientName)
+	} else {
+		// A stale dashboard (rendered before a broker restart) carries
+		// grant IDs this server has never seen. Do not fail silently:
+		// log it so "revoke didn't work" is diagnosable.
+		log.Printf("revoke for unknown grant %q ignored (stale dashboard?)", r.FormValue("grant_id"))
 	}
 	s.mu.Unlock()
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleRevokeAll revokes every live grant at once. With several
+// grants covering the same scopes (repeat approvals), revoking just
+// one leaves the others fully usable — which reads exactly like
+// "revoke doesn't work". This is the stop-everything button short of
+// a full lock (which also drops the backend credential).
+func (s *server) handleRevokeAll(w http.ResponseWriter, r *http.Request, sess *adminSession) {
+	if r.Method != http.MethodPost || !s.checkCSRF(r, sess) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	now := time.Now()
+	s.mu.Lock()
+	n := 0
+	for _, g := range s.grants {
+		if g.active(now) {
+			g.Revoked = true
+			n++
+			s.audit = append(s.audit, auditEntry{At: now, Client: g.ClientName, Ref: strings.Join(g.Scopes, ","), Result: "revoked"})
+		}
+	}
+	s.mu.Unlock()
+	log.Printf("revoked ALL grants (%d)", n)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -976,6 +1006,8 @@ select,input[type=number]{min-height:44px}
 <td>{{.ExpiresAt.Format "15:04:05"}}</td><td>{{.ReadsLeft}}</td>
 <td><form method="post" action="/revoke"><input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="grant_id" value="{{.ID}}"><button type="submit" class="btn">失効</button></form></td></tr>{{end}}</table>
+<form method="post" action="/revoke-all" style="margin-top:.5em"><input type="hidden" name="csrf" value="{{.CSRF}}">
+<button type="submit" class="btn danger">全ての grant を失効</button></form>
 {{else}}<p>なし</p>{{end}}
 
 <h2>監査ログ（メモリ内・直近のみ）</h2>
@@ -1109,6 +1141,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/approve", admin(s.handleApprove))
 	mux.HandleFunc("/deny", admin(s.handleDeny))
 	mux.HandleFunc("/revoke", admin(s.handleRevoke))
+	mux.HandleFunc("/revoke-all", admin(s.handleRevokeAll))
 	mux.HandleFunc("/grant/add-scope", admin(s.handleGrantAddScope))
 	mux.HandleFunc("/push/register", admin(s.handlePushRegister))
 	mux.HandleFunc("/push/unregister", admin(s.handlePushUnregister))

@@ -138,6 +138,32 @@ func TestApproveFormPreselectsRequestedTTL(t *testing.T) {
 	}
 }
 
+func TestRevokeAll(t *testing.T) {
+	base, _ := newTestServer(t)
+	admin := adminClient(t, base)
+	unlock(t, admin, base)
+	var tickets []string
+	for i := 0; i < 2; i++ {
+		tk := mkTicket(t)
+		reqID, _ := createRequest(t, base, tk, []string{"op://Automation/demo"})
+		approve(t, admin, base, reqID, "3600")
+		tickets = append(tickets, tk)
+		if code, _ := doRead(base, tk, "op://Automation/demo/api-key"); code != 200 {
+			t.Fatalf("grant %d read before revoke-all = %d", i, code)
+		}
+	}
+	resp, err := admin.PostForm(base+"/revoke-all", url.Values{"csrf": {csrfFor(t, admin, base)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	for i, tk := range tickets {
+		if code, _ := doRead(base, tk, "op://Automation/demo/api-key"); code == 200 {
+			t.Fatalf("grant %d still reads after revoke-all", i)
+		}
+	}
+}
+
 func TestGrantAddScope(t *testing.T) {
 	base, s := newTestServer(t)
 	admin := adminClient(t, base)
