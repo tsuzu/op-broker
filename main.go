@@ -35,6 +35,8 @@ func main() {
 		err = cmdRequest(prependServerEnv(os.Args[2:]))
 	case "read":
 		err = cmdRead(os.Args[2:])
+	case "describe":
+		err = cmdDescribe(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
 	case "agent":
@@ -119,6 +121,7 @@ func usage() {
   opbroker serve   [--listen :18787] [--op /path/to/op] [--demo]
   opbroker request --server URL [--name N] [--reason R] [--ttl 1h] [--wait 10m] [--agent] op://... [op://...]
   opbroker read    [--server URL] op://Vault/Item/field     (ticket from $BROKER_TICKET or the local agent)
+  opbroker describe [--server URL] op://Vault/Item          (field structure, metadata only)
   opbroker status  [--server URL]                           (ticket from $BROKER_TICKET or the local agent)
   opbroker agent   [--stop|--forget]                        (local ticket daemon; started automatically by request --agent)`)
 }

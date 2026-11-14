@@ -248,6 +248,59 @@ func cmdRead(args []string) error {
 	return nil
 }
 
+// cmdDescribe implements: opbroker describe [--server URL] op://Vault/Item
+// It prints the item's field structure (metadata only) with the exact
+// references to use with `opbroker read`.
+func cmdDescribe(args []string) error {
+	server := os.Getenv("BROKER_SERVER")
+	var ref string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--server":
+			i++
+			server = args[i]
+		default:
+			ref = args[i]
+		}
+	}
+	if ref == "" {
+		return fmt.Errorf("an item reference op://Vault/Item is required")
+	}
+	ticket := resolveTicket()
+	if ticket == "" {
+		return fmt.Errorf("no ticket: set BROKER_TICKET or run `opbroker request --agent ...` first")
+	}
+	c := newClient(server, ticket)
+	code, data, err := c.doJSON(http.MethodPost, "/api/describe", map[string]string{"ref": ref}, true)
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		Vault  string      `json:"vault"`
+		Item   string      `json:"item"`
+		Fields []FieldInfo `json:"fields"`
+		Error  string      `json:"error"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("bad describe response: %s", data)
+	}
+	if code != http.StatusOK {
+		return fmt.Errorf("describe refused (%d): %s", code, resp.Error)
+	}
+	for _, f := range resp.Fields {
+		fmt.Println(f.Ref)
+		meta := "  type: " + f.Type
+		if f.Section != "" {
+			meta += ", section: " + f.Section
+		}
+		fmt.Println(meta)
+		if f.OTPRef != "" {
+			fmt.Printf("  current code: opbroker read %q\n", f.OTPRef)
+		}
+	}
+	return nil
+}
+
 // cmdStatus implements: opbroker status --server URL
 func cmdStatus(args []string) error {
 	server := os.Getenv("BROKER_SERVER")

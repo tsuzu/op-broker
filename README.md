@@ -81,6 +81,19 @@ opbroker agent --stop     # エージェント終了
 
 `$BROKER_TICKET` が設定されていればそちらが優先される。
 
+フィールド参照の探索（describe）:
+アイテムのフィールド名（特に TOTP のラベル）が分からないときは、
+`opbroker describe op://Vault/Item` でフィールド構成だけを取得できる。
+返るのはセクション名・ラベル・型と読み取り用参照のみで、値や TOTP の
+seed は含まれない。read と同じ grant / scope で認可され、read 枠を
+1つ消費する。OTP フィールドには現在コード用の参照
+（`...?attribute=otp`）も併記される。
+
+```sh
+opbroker describe op://milldea/"SMMR stg"
+opbroker read "op://milldea/SMMR stg/<ラベル>?attribute=otp"
+```
+
 scope は階層パターンで指定できる（承認した範囲内なら何度でも読める。
 TTL と read 回数上限は従来どおり効く）:
 

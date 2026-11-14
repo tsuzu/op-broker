@@ -24,6 +24,11 @@ func TestScopeMatching(t *testing.T) {
 		{"op://Vault", "op://VaultEvil/Item/field", false},
 		{"op://Vault/Item", "op://Vault/Item2/field", false},
 		{"op://Va", "op://Vault/Item/field", false},
+		// A query suffix changes rendering, not identity: the field-scope
+		// covers the OTP rendering of the same field.
+		{"op://Vault/Item/one-time password", "op://Vault/Item/one-time password?attribute=otp", true},
+		{"op://Vault/Item/one-time password", "op://Vault/Item/password?attribute=otp", false},
+		{"op://Vault/Item", "op://Vault/Item/one-time password?attribute=otp", true},
 	}
 	for _, c := range cases {
 		if got := scopeMatches([]string{c.pattern}, c.ref); got != c.want {

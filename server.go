@@ -174,8 +174,13 @@ func validScope(ref string) bool {
 
 // scopeMatches reports whether any granted scope pattern covers ref.
 // Matching is segment-aware: "op://Vault" does not match
-// "op://VaultEvil/...".
+// "op://VaultEvil/...". A query suffix on the ref (e.g.
+// "?attribute=otp") is ignored: it changes how the field is rendered,
+// not which field is read.
 func scopeMatches(scopes []string, ref string) bool {
+	if i := strings.IndexByte(ref, '?'); i >= 0 {
+		ref = ref[:i]
+	}
 	for _, p := range scopes {
 		if patternMatches(p, ref) {
 			return true
@@ -324,6 +329,90 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// splitItemRef parses an item-level reference "op://Vault/Item".
+func splitItemRef(ref string) (vault, item string, ok bool) {
+	if !strings.HasPrefix(ref, "op://") || strings.Contains(ref, "?") {
+		return "", "", false
+	}
+	parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(ref, "op://"), "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// handleDescribe returns the field structure (metadata only, never
+// values) of one item inside the caller's grant scope, so clients can
+// discover exact field references — notably the label of a TOTP field —
+// instead of guessing them. It costs one read slot, like a read.
+func (s *server) handleDescribe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ticket, ok := s.bearerTicket(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing ticket"})
+		return
+	}
+	var body struct {
+		Ref string `json:"ref"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body must be {\"ref\": \"op://Vault/Item\"}"})
+		return
+	}
+	vault, item, vok := splitItemRef(body.Ref)
+	if !vok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ref must be an item reference op://Vault/Item"})
+		return
+	}
+	itemRef := "op://" + vault + "/" + item
+	th := ticketHash(ticket)
+	now := time.Now()
+
+	s.mu.Lock()
+	cred := s.credential
+	g, gok := s.grantByTkt[th]
+	client := ""
+	result := ""
+	if gok {
+		client = g.ClientName
+	}
+	switch {
+	case cred == "":
+		result = "locked"
+	case !gok || !g.active(now):
+		result = "expired"
+	case !scopeMatches(g.Scopes, itemRef):
+		result = "denied-scope"
+	default:
+		g.ReadsLeft--
+	}
+	s.mu.Unlock()
+
+	if result != "" {
+		s.addAudit(client, itemRef, "describe-"+result)
+		code := http.StatusForbidden
+		if result == "locked" {
+			code = http.StatusLocked
+		}
+		writeJSON(w, code, map[string]string{"error": "describe refused: " + result})
+		return
+	}
+	fields, err := s.backend.Describe(context.Background(), cred, vault, item)
+	if err != nil {
+		s.addAudit(client, itemRef, "describe-backend-error")
+		s.mu.Lock()
+		g.ReadsLeft++
+		s.mu.Unlock()
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	s.addAudit(client, itemRef, "describe-ok")
+	writeJSON(w, http.StatusOK, map[string]any{"vault": vault, "item": item, "fields": fields})
 }
 
 func (s *server) handleRead(w http.ResponseWriter, r *http.Request) {
@@ -749,6 +838,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/requests", s.handleCreateRequest)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/read", s.handleRead)
+	mux.HandleFunc("/api/describe", s.handleDescribe)
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/", s.handleDashboard)
 	admin := func(h func(http.ResponseWriter, *http.Request, *adminSession)) http.HandlerFunc {
