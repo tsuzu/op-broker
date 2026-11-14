@@ -739,24 +739,31 @@ var dashTmpl = template.Must(template.New("dash").Parse(`<!DOCTYPE html>
 <style>body{font-family:system-ui,sans-serif;max-width:860px;margin:2em auto;padding:0 1em}
 table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:.4em;text-align:left;vertical-align:top}
 code{font-size:.9em}.locked{color:#b00;font-weight:bold}.open{color:#070;font-weight:bold}
-input,select,textarea{font-size:1em} .small{color:#666;font-size:.85em}</style></head><body>
+input,select,textarea{font-size:16px} .small{color:#666;font-size:.85em}
+.btn{min-height:44px;padding:.55em 1.1em;font-size:1em;border:1px solid #94a3b8;border-radius:8px;background:#f1f5f9;color:#0f172a;cursor:pointer}
+.btn.primary{background:#0f172a;border-color:#0f172a;color:#fff;font-weight:600}
+.btn:active{opacity:.85}
+.unlock-form input[type=password]{width:100%;box-sizing:border-box;min-height:48px;padding:.5em;margin:.4em 0}
+.unlock-form .btn{width:100%;min-height:52px;font-size:1.1em}
+select,input[type=number]{min-height:44px}
+@media (max-width:640px){body{margin:1em auto}table{font-size:.92em}}</style></head><body>
 <h1>op-broker</h1>
 <p>状態: {{if .Unlocked}}<span class="open">UNLOCKED（資格情報はメモリ内のみ）</span>{{else}}<span class="locked">LOCKED（何も読めません）</span>{{end}}
 {{if .Demo}}<br><span class="small">DEMO モード: ダミーの秘密を返します</span>{{end}}</p>
 
 {{if .Unlocked}}
 <form method="post" action="/lock"><input type="hidden" name="csrf" value="{{.CSRF}}">
-<button type="submit">ロックする（全 grant も失効）</button></form>
+<button type="submit" class="btn">ロックする（全 grant も失効）</button></form>
 {{else}}
-<form method="post" action="/unlock"><input type="hidden" name="csrf" value="{{.CSRF}}">
+<form method="post" action="/unlock" class="unlock-form"><input type="hidden" name="csrf" value="{{.CSRF}}">
 <label>1Password Service Account token（ops_...）を貼り付け — サーバーのメモリにだけ保持され、ディスクには書きません<br>
-<input type="password" name="credential" size="70" autocomplete="off"></label>
-<button type="submit">Unlock</button></form>
+<input type="password" name="credential" autocomplete="off"></label>
+<button type="submit" class="btn primary">Unlock</button></form>
 {{end}}
 
 {{if .PushEnabled}}
 <div style="margin:1em 0">
-<button type="button" id="pushBtn">プッシュ通知を有効化（新しい申請を通知）</button>
+<button type="button" id="pushBtn" class="btn">プッシュ通知を有効化（新しい申請を通知）</button>
 <span id="pushState" class="small"></span>
 <p class="small">iPhone では Safari の共有メニューから「ホーム画面に追加」し、追加したアイコンから開いた状態で有効化してください。</p>
 </div>
@@ -813,9 +820,9 @@ input,select,textarea{font-size:1em} .small{color:#666;font-size:.85em}</style><
 <input type="hidden" name="request_id" value="{{.ID}}">
 <select name="ttl_seconds"><option value="900">15分</option><option value="3600" selected>1時間</option><option value="28800">8時間</option><option value="86400">24時間</option></select>
 <input type="number" name="max_reads" value="100" min="1" max="10000" style="width:5em">回
-<button type="submit">承認</button></form>
+<button type="submit" class="btn primary">承認</button></form>
 <form method="post" action="/deny"><input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="request_id" value="{{.ID}}"><button type="submit">拒否</button></form></td>
+<input type="hidden" name="request_id" value="{{.ID}}"><button type="submit" class="btn">拒否</button></form></td>
 </tr>{{end}}</table>
 <p class="small">コードはクライアント側に表示される6桁と一致することを確認してから承認してください。</p>
 {{else}}<p>なし</p>{{end}}
@@ -826,7 +833,7 @@ input,select,textarea{font-size:1em} .small{color:#666;font-size:.85em}</style><
 {{range .Grants}}<tr><td>{{.ClientName}}<br><span class="small">src: {{.SourceIP}}</span></td><td>{{range .Scopes}}<code>{{.}}</code><br>{{end}}</td>
 <td>{{.ExpiresAt.Format "15:04:05"}}</td><td>{{.ReadsLeft}}</td>
 <td><form method="post" action="/revoke"><input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="grant_id" value="{{.ID}}"><button type="submit">失効</button></form></td></tr>{{end}}</table>
+<input type="hidden" name="grant_id" value="{{.ID}}"><button type="submit" class="btn">失効</button></form></td></tr>{{end}}</table>
 {{else}}<p>なし</p>{{end}}
 
 <h2>監査ログ（メモリ内・直近のみ）</h2>
@@ -837,11 +844,14 @@ input,select,textarea{font-size:1em} .small{color:#666;font-size:.85em}</style><
 
 var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>op-broker login</title></head><body style="font-family:system-ui,sans-serif;max-width:480px;margin:3em auto">
+<title>op-broker login</title>
+<style>body{font-family:system-ui,sans-serif;max-width:480px;margin:3em auto;padding:0 1em}
+input{font-size:16px;width:100%;box-sizing:border-box;min-height:48px;padding:.5em;margin:.4em 0}
+button{min-height:52px;width:100%;font-size:1.1em;font-weight:600;border-radius:8px;border:1px solid #0f172a;background:#0f172a;color:#fff;cursor:pointer}</style></head><body>
 <h1>op-broker</h1>
 <form method="post" action="/login">
 <label>Admin token（起動時に一度だけ表示されます）<br>
-<input type="password" name="admin_token" size="40" autocomplete="off"></label>
+<input type="password" name="admin_token" autocomplete="off"></label>
 <button type="submit">ログイン</button></form>
 </body></html>`))
 
