@@ -182,14 +182,21 @@ func validScope(ref string) bool {
 
 // scopeMatches reports whether any granted scope pattern covers ref.
 // Matching is segment-aware: "op://Vault" does not match
-// "op://VaultEvil/...". A query suffix on the ref (e.g.
+// "op://VaultEvil/...". A query suffix on either side (e.g.
 // "?attribute=otp") is ignored: it changes how the field is rendered,
-// not which field is read.
+// not which field is read. Stripping only the ref's query was a bug
+// (v0.4.3 and earlier): a client that requested the full OTP
+// reference as its scope — query included — could never match,
+// because the stored pattern kept the query while the incoming ref
+// was stripped of it.
 func scopeMatches(scopes []string, ref string) bool {
 	if i := strings.IndexByte(ref, '?'); i >= 0 {
 		ref = ref[:i]
 	}
 	for _, p := range scopes {
+		if i := strings.IndexByte(p, '?'); i >= 0 {
+			p = p[:i]
+		}
 		if patternMatches(p, ref) {
 			return true
 		}
