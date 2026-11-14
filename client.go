@@ -96,9 +96,38 @@ func (c *client) status() (*statusResp, int, error) {
 // With --agent, the approved ticket is handed to the local agent daemon
 // instead of being printed as an export line: no shell or tool ever has to
 // carry the ticket itself.
+// grantCoversAll reports whether a held grant's scopes cover every
+// requested scope.
+func grantCoversAll(held, want []string) bool {
+	for _, w := range want {
+		if !scopeMatches(held, w) {
+			return false
+		}
+	}
+	return true
+}
+
+// reusableGrant looks for an agent-held grant that already covers the
+// requested scopes with at least minRemaining of lifetime left.
+func reusableGrant(want []string, minRemaining time.Duration) (agentEntryInfo, bool) {
+	for _, e := range agentList() {
+		if e.ExpiresUnix == 0 {
+			continue
+		}
+		if time.Until(time.Unix(e.ExpiresUnix, 0)) < minRemaining {
+			continue
+		}
+		if grantCoversAll(e.Scopes, want) {
+			return e, true
+		}
+	}
+	return agentEntryInfo{}, false
+}
+
 func cmdRequest(args []string) error {
 	var server, name, reason string
 	var ttl, wait time.Duration = time.Hour, 10 * time.Minute
+	var minRemaining time.Duration = time.Hour
 	var scopes []string
 	useAgent := false
 	for i := 0; i < len(args); i++ {
@@ -128,6 +157,13 @@ func cmdRequest(args []string) error {
 				return err
 			}
 			wait = d
+		case "--min-remaining":
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil {
+				return err
+			}
+			minRemaining = d
 		default:
 			scopes = append(scopes, args[i])
 		}
@@ -137,6 +173,18 @@ func cmdRequest(args []string) error {
 	}
 	if len(scopes) == 0 {
 		return fmt.Errorf("at least one op:// scope is required")
+	}
+	// Scripts often fire the same request repeatedly. In agent mode,
+	// if a held grant already covers the scopes with enough lifetime
+	// left (default 1h), succeed immediately without creating a new
+	// request — no dashboard noise, no push notification.
+	if useAgent && minRemaining > 0 {
+		if e, ok := reusableGrant(scopes, minRemaining); ok {
+			exp := time.Unix(e.ExpiresUnix, 0)
+			fmt.Fprintf(os.Stderr, "既に有効な grant があります（期限 %s、残り %s）。新規リクエストは出しませんでした。\n",
+				exp.Format("2006-01-02 15:04:05"), time.Until(exp).Round(time.Minute))
+			return nil
+		}
 	}
 	if name == "" {
 		name, _ = os.Hostname()
