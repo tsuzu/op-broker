@@ -956,7 +956,7 @@ select,input[type=number]{min-height:44px}
 <td>{{.RequestedTTL}}</td>
 <td><form method="post" action="/approve"><input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="request_id" value="{{.ID}}">
-<select name="ttl_seconds"><option value="900">15分</option><option value="3600" selected>1時間</option><option value="28800">8時間</option><option value="86400">24時間</option></select>
+<select name="ttl_seconds"><option value="{{printf "%.0f" .RequestedTTL.Seconds}}" selected>希望通り（{{.RequestedTTL}}）</option><option value="900">15分</option><option value="3600">1時間</option><option value="28800">8時間</option><option value="86400">24時間</option></select>
 <input type="number" name="max_reads" value="100" min="1" max="10000" style="width:5em">回
 <button type="submit" class="btn primary">承認</button></form>
 <form method="post" action="/deny"><input type="hidden" name="csrf" value="{{$.CSRF}}">

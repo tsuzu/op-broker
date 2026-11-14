@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -106,6 +107,35 @@ func TestRenewFlow(t *testing.T) {
 		t.Fatalf("renew of revoked grant = %d, want 404", code)
 	}
 	_ = gid
+}
+
+// Regression (live, 2026-11-15): the approve form used to hardcode
+// "1 hour" as the selected TTL, silently ignoring the requested TTL —
+// every grant died after 1h and the client's >=1h-reuse could never
+// engage. The requested TTL must be the preselected option.
+func TestApproveFormPreselectsRequestedTTL(t *testing.T) {
+	base, _ := newTestServer(t)
+	admin := adminClient(t, base)
+	unlock(t, admin, base)
+	ticket := mkTicket(t)
+	body, _ := json.Marshal(map[string]any{
+		"ticket_hash": ticketHash(ticket), "client_name": "ttl-test", "host": "h",
+		"scopes": []string{"op://Automation"}, "ttl_seconds": 7200,
+	})
+	resp, err := http.Post(base+"/api/requests", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	page, err := admin.Get(base + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Body.Close()
+	htmlBytes, _ := io.ReadAll(page.Body)
+	if !strings.Contains(string(htmlBytes), `<option value="7200" selected>`) {
+		t.Fatalf("approve form does not preselect the requested TTL:\n%s", htmlBytes)
+	}
 }
 
 func TestGrantAddScope(t *testing.T) {
