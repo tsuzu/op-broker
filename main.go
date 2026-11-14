@@ -67,6 +67,7 @@ func cmdServe(args []string) error {
 	demo := fs.Bool("demo", false, "serve demo secrets instead of real 1Password items (for testing)")
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (PEM); with --tls-key, serve HTTPS with hot reload on file change")
 	tlsKey := fs.String("tls-key", "", "TLS private key file (PEM)")
+	trustProxyHeader := fs.String("trust-proxy-header", "", "header set by a loopback authenticating proxy (e.g. X-Auth-Request-User); loopback requests carrying it are admin-authenticated")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -83,6 +84,7 @@ func cmdServe(args []string) error {
 		generated = true
 	}
 	s := newServer(backend, *demo, adminToken)
+	s.trustProxyHeader = *trustProxyHeader
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           s.routes(),

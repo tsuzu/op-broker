@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -94,6 +95,14 @@ type server struct {
 	grantByTkt map[string]*grant         // ticketHash -> grant
 	sessions   map[string]*adminSession
 	audit      []auditEntry
+
+	// trustProxyHeader, when set (e.g. "X-Auth-Request-User"), treats a
+	// request as admin-authenticated if it carries that header AND arrives
+	// from a loopback address — i.e. from a reverse proxy in the same
+	// network namespace (an oauth2-proxy sidecar) that performed the real
+	// login. The header from any non-loopback peer is ignored, so the
+	// gate cannot be spoofed from another pod or host.
+	trustProxyHeader string
 }
 
 func newServer(backend Backend, demo bool, adminToken string) *server {
@@ -376,17 +385,41 @@ func truncate(s string, n int) string {
 // ---------------------------------------------------------------------------
 
 func (s *server) adminAuth(w http.ResponseWriter, r *http.Request) (*adminSession, bool) {
-	c, err := r.Cookie("broker_admin")
+	if c, err := r.Cookie("broker_admin"); err == nil {
+		s.mu.Lock()
+		sess, ok := s.sessions[c.Value]
+		s.mu.Unlock()
+		if ok && time.Now().Before(sess.Expires) {
+			return sess, true
+		}
+	}
+	// Proxy-header path: a same-netns authenticating proxy (oauth2-proxy
+	// sidecar) asserts the user in a header. Only loopback peers may use
+	// it, and the dashboard gets a stable server-side session so its CSRF
+	// tokens work unchanged.
+	if s.trustProxyHeader != "" && isLoopbackRemote(r.RemoteAddr) {
+		if user := r.Header.Get(s.trustProxyHeader); user != "" {
+			key := "proxy:" + user
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			sess, ok := s.sessions[key]
+			if !ok || time.Now().After(sess.Expires) {
+				sess = &adminSession{CSRF: randHex(16), Expires: time.Now().Add(adminSessionTTL)}
+				s.sessions[key] = sess
+			}
+			return sess, true
+		}
+	}
+	return nil, false
+}
+
+func isLoopbackRemote(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
-		return nil, false
+		host = remoteAddr
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess, ok := s.sessions[c.Value]
-	if !ok || time.Now().After(sess.Expires) {
-		return nil, false
-	}
-	return sess, true
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *server) checkCSRF(r *http.Request, sess *adminSession) bool {
