@@ -127,7 +127,7 @@ func reusableGrant(want []string, minRemaining time.Duration) (agentEntryInfo, b
 func cmdRequest(args []string) error {
 	var server, name, reason string
 	var ttl, wait time.Duration = time.Hour, 10 * time.Minute
-	var minRemaining time.Duration = time.Hour
+	var minRemaining time.Duration = 30 * time.Minute
 	var scopes []string
 	useAgent := false
 	for i := 0; i < len(args); i++ {
@@ -176,7 +176,7 @@ func cmdRequest(args []string) error {
 	}
 	// Scripts often fire the same request repeatedly. In agent mode,
 	// if a held grant already covers the scopes with enough lifetime
-	// left (default 1h), succeed immediately without creating a new
+	// left (default 30m), succeed immediately without creating a new
 	// request — no dashboard noise, no push notification.
 	if useAgent && minRemaining > 0 {
 		if e, ok := reusableGrant(scopes, minRemaining); ok {

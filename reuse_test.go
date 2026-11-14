@@ -115,8 +115,8 @@ func TestRequestReusesExistingGrant(t *testing.T) {
 	if n := requestCount(s); n != 2 {
 		t.Fatalf("requests after uncovered = %d, want 2", n)
 	}
-	// A held entry with <1h left is NOT reused, even when it covers.
-	if err := storeToAgent("short-ticket", []string{"op://Short"}, time.Now().Add(30*time.Minute)); err != nil {
+	// A held entry with <30m left is NOT reused, even when it covers.
+	if err := storeToAgent("short-ticket", []string{"op://Short"}, time.Now().Add(15*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	args3 := []string{"--server", base, "--agent", "--wait", "30s", "op://Short"}
