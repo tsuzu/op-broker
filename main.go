@@ -65,6 +65,8 @@ func cmdServe(args []string) error {
 	listen := fs.String("listen", ":18787", "listen address (bind to private interfaces only: Tailscale/WireGuard/LAN)")
 	opPath := fs.String("op", "op", "path to the 1Password CLI binary")
 	demo := fs.Bool("demo", false, "serve demo secrets instead of real 1Password items (for testing)")
+	tlsCert := fs.String("tls-cert", "", "TLS certificate file (PEM); with --tls-key, serve HTTPS with hot reload on file change")
+	tlsKey := fs.String("tls-key", "", "TLS private key file (PEM)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -86,13 +88,25 @@ func cmdServe(args []string) error {
 		Handler:           s.routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("op-broker listening on %s (demo=%v)", *listen, *demo)
 	if generated {
 		// Shown exactly once, at startup, in the server log. The token is
 		// regenerated on every restart and never stored anywhere.
 		log.Printf("ADMIN TOKEN (this boot only): %s", adminToken)
 	}
 	log.Printf("dashboard: unlock + approvals are done in the web UI; server starts LOCKED")
+	if (*tlsCert == "") != (*tlsKey == "") {
+		return fmt.Errorf("--tls-cert and --tls-key must be given together")
+	}
+	if *tlsCert != "" {
+		rl, err := newCertReloader(*tlsCert, *tlsKey)
+		if err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
+		srv.TLSConfig = rl.tlsConfig()
+		log.Printf("op-broker listening on %s (demo=%v, https with cert reload)", *listen, *demo)
+		return srv.ListenAndServeTLS("", "")
+	}
+	log.Printf("op-broker listening on %s (demo=%v, http)", *listen, *demo)
 	return srv.ListenAndServe()
 }
 
