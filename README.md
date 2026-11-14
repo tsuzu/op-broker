@@ -31,10 +31,14 @@
     レコード → LoadBalancer 10.24.0.202:443、infra net のみで
     インターネットには出していない）。broker 自身が TLS を終端する
   - 証明書は cert-manager の Let's Encrypt 証明書（DNS-01 検証）。
-    プライベート IP を指す名前でも公開信頼の証明書が取れるのが要点で、
-    更新時は Secret が差し替わり、broker が再起動なしで読み直す
-    （unlock 状態や grant は保持される）
-  - Admin token は Pod 起動ごとに生成され Pod ログに一度だけ出る:
+    プライベート IP を指す名前でも公開信頼の証明書が取れるのが要点
+  - ダッシュボードは **Pocket ID ゲート**（oauth2-proxy サイドカー、
+    passkey ログイン）の内側。サイドカーが TLS 終端と認証を担い、
+    broker へは loopback でユーザーヘッダーを渡す（broker は loopback
+    からのヘッダーだけを信頼する）。クライアント API（`/api/`）は
+    ゲート対象外で、従来どおりチケット認証のみ
+  - Admin token ログインも残してある（フォールバック）。トークンは
+    Pod 起動ごとに生成され Pod ログに一度だけ出る:
     `kubectl -n op-broker logs deploy/op-broker | grep "ADMIN TOKEN"`
 - クライアント: 同一バイナリ。Mac は `~/.local/bin/opbroker`
   (darwin/arm64 ビルド)。
