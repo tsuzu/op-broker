@@ -840,6 +840,40 @@ select,input[type=number]{min-height:44px}
 {{if .Audit}}<table><tr><th>時刻</th><th>クライアント</th><th>ref</th><th>結果</th></tr>
 {{range .Audit}}<tr><td>{{.At.Format "15:04:05"}}</td><td>{{.Client}}</td><td><code>{{.Ref}}</code></td><td>{{.Result}}</td></tr>{{end}}</table>
 {{else}}<p>なし</p>{{end}}
+<script>
+// Auto-refresh: requests arrive asynchronously (and pushes only focus
+// this page), so reload to show fresh state — when the page becomes
+// visible again, when the service worker says a push was tapped, when
+// restored from the back-forward cache, and periodically while idle.
+// Never reload while the admin is typing (e.g. an unlock token).
+(function () {
+  var last = Date.now();
+  ['pointerdown', 'keydown'].forEach(function (ev) {
+    window.addEventListener(ev, function () { last = Date.now(); }, true);
+  });
+  function busy() {
+    var pw = document.querySelector('input[type=password]');
+    if (pw && pw.value) { return true; }
+    var el = document.activeElement;
+    return !!(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value);
+  }
+  function reload(force) {
+    if (busy()) { return; }
+    if (force || Date.now() - last > 20000) { location.reload(); }
+  }
+  setInterval(function () { if (!document.hidden) { reload(false); } }, 10000);
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) { reload(true); }
+  });
+  window.addEventListener('pageshow', function (e) { if (e.persisted) { reload(true); } });
+  window.addEventListener('focus', function () { reload(false); });
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener('message', function (e) {
+      if (e.data && e.data.type === 'opbroker-reload') { reload(true); }
+    });
+  }
+})();
+</script>
 </body></html>`))
 
 var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>

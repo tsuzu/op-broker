@@ -66,7 +66,13 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       for (const c of list) {
-        if (c.url.startsWith(self.location.origin)) { c.focus(); return; }
+        if (c.url.startsWith(self.location.origin)) {
+          c.focus();
+          // Focusing alone restores the page exactly as it was left —
+          // tell it to reload so the new request actually shows up.
+          c.postMessage({ type: 'opbroker-reload' });
+          return;
+        }
       }
       return clients.openWindow(url);
     })

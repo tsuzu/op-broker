@@ -61,10 +61,13 @@ func TestPWAAssets(t *testing.T) {
 	}
 	dash, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	for _, want := range []string{`rel="manifest"`, "pushBtn", "firebase-messaging-sw.js"} {
+	for _, want := range []string{`rel="manifest"`, "pushBtn", "firebase-messaging-sw.js", "visibilitychange", "opbroker-reload"} {
 		if !strings.Contains(string(dash), want) {
 			t.Fatalf("dashboard missing %q", want)
 		}
+	}
+	if !strings.Contains(string(swBody), "opbroker-reload") {
+		t.Fatal("service worker does not post the reload message on notification click")
 	}
 }
 
