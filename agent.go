@@ -237,6 +237,14 @@ func (a *agentServer) handle(conn net.Conn) {
 		}
 		a.st.mu.Unlock()
 		writeAgentResp(conn, agentResp{OK: true, Entries: infos})
+	case "drop":
+		// Remove one specific entry (used when the server has provably
+		// forgotten the ticket, e.g. after a broker restart).
+		a.st.mu.Lock()
+		delete(a.st.entries, ticketHash(req.Ticket))
+		a.st.pruneLocked(time.Now())
+		a.st.mu.Unlock()
+		writeAgentResp(conn, agentResp{OK: true})
 	case "present":
 		a.st.mu.Lock()
 		a.st.pruneLocked(time.Now())
@@ -402,6 +410,11 @@ func agentResolve(ref string) string {
 // agentTicket returns a ticket held by the local agent, or "".
 func agentTicket() string {
 	return agentResolve("")
+}
+
+// dropFromAgent removes one ticket's entry from the agent.
+func dropFromAgent(ticket string) {
+	_, _ = agentCall(agentReq{Op: "drop", Ticket: ticket})
 }
 
 // agentTickets returns all unexpired tickets the agent holds.

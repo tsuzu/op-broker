@@ -254,6 +254,32 @@ func cmdRequest(args []string) error {
 	return fmt.Errorf("timed out waiting for approval (request stays pending briefly; re-run request if needed)")
 }
 
+// resolveLiveTicket resolves a ticket for ref like
+// resolveTicketForRef, but additionally drops agent entries the
+// server has forgotten (a broker restart wipes its RAM-only state;
+// /api/status answers 404 "unknown ticket" for those) and moves on
+// to the next covering entry. A genuinely expired grant still
+// answers 200 on /api/status, so it is kept and reported as expired
+// by the caller as before.
+func resolveLiveTicket(server, ref string) string {
+	if t := os.Getenv("BROKER_TICKET"); t != "" {
+		return t
+	}
+	for {
+		t := agentResolve(ref)
+		if t == "" {
+			return ""
+		}
+		c := newClient(server, t)
+		_, code, err := c.status()
+		if err == nil && code == http.StatusNotFound {
+			dropFromAgent(t)
+			continue
+		}
+		return t
+	}
+}
+
 // cmdRead implements: opbroker read --server URL op://Vault/Item/field
 // The ticket comes from $BROKER_TICKET. The secret is printed to stdout.
 func cmdRead(args []string) error {
@@ -273,9 +299,9 @@ func cmdRead(args []string) error {
 	if ref == "" {
 		return fmt.Errorf("a secret reference op://Vault/Item/field is required")
 	}
-	ticket, _ := resolveTicketForRef(ref)
+	ticket := resolveLiveTicket(server, ref)
 	if ticket == "" {
-		return fmt.Errorf("no ticket covers %s: set BROKER_TICKET or run `opbroker request --agent ...` first", ref)
+		return fmt.Errorf("no live ticket covers %s: set BROKER_TICKET or run `opbroker request --agent ...` first", ref)
 	}
 	c := newClient(server, ticket)
 	code, data, err := c.doJSON(http.MethodPost, "/api/read", map[string]string{"ref": ref}, true)
@@ -314,9 +340,9 @@ func cmdDescribe(args []string) error {
 	if ref == "" {
 		return fmt.Errorf("an item reference op://Vault/Item is required")
 	}
-	ticket, _ := resolveTicketForRef(ref)
+	ticket := resolveLiveTicket(server, ref)
 	if ticket == "" {
-		return fmt.Errorf("no ticket covers %s: set BROKER_TICKET or run `opbroker request --agent ...` first", ref)
+		return fmt.Errorf("no live ticket covers %s: set BROKER_TICKET or run `opbroker request --agent ...` first", ref)
 	}
 	c := newClient(server, ticket)
 	code, data, err := c.doJSON(http.MethodPost, "/api/describe", map[string]string{"ref": ref}, true)
@@ -366,8 +392,8 @@ func cmdStatus(args []string) error {
 			server = args[i]
 		}
 	}
-	printStatus := func(ticket string) error {
-		c := newClient(server, ticket)
+	if t := os.Getenv("BROKER_TICKET"); t != "" {
+		c := newClient(server, t)
 		st, code, err := c.status()
 		if err != nil {
 			return err
@@ -375,28 +401,56 @@ func cmdStatus(args []string) error {
 		if code != http.StatusOK {
 			return fmt.Errorf("status failed (%d): %s", code, st.Error)
 		}
-		fmt.Printf("status: %s\n", st.Status)
-		if st.GrantExpires != "" {
-			fmt.Printf("grant_expires_at: %s\nreads_left: %d\nscopes: %s\n", st.GrantExpires, st.ReadsLeft, strings.Join(st.Scopes, ", "))
-		}
+		fmt.Print(renderStatus(st))
 		return nil
 	}
-	if t := os.Getenv("BROKER_TICKET"); t != "" {
-		return printStatus(t)
-	}
-	tickets := agentTickets()
-	if len(tickets) == 0 {
+	text, live := agentStatusReport(server)
+	if text == "" {
 		return fmt.Errorf("no ticket: set BROKER_TICKET or run `opbroker request --agent ...` first")
 	}
-	for i, t := range tickets {
-		if i > 0 {
-			fmt.Println("---")
-		}
-		if err := printStatus(t); err != nil {
-			return err
-		}
+	fmt.Print(text)
+	if live == 0 {
+		return fmt.Errorf("no live grants")
 	}
 	return nil
+}
+
+func renderStatus(st *statusResp) string {
+	out := fmt.Sprintf("status: %s\n", st.Status)
+	if st.GrantExpires != "" {
+		out += fmt.Sprintf("grant_expires_at: %s\nreads_left: %d\nscopes: %s\n", st.GrantExpires, st.ReadsLeft, strings.Join(st.Scopes, ", "))
+	}
+	return out
+}
+
+// agentStatusReport renders the status of every agent-held grant.
+// Entries the server has forgotten (404 after a broker restart) are
+// dropped from the agent and noted, instead of failing the whole
+// report. live counts grants the server answered for.
+func agentStatusReport(server string) (string, int) {
+	tickets := agentTickets()
+	if len(tickets) == 0 {
+		return "", 0
+	}
+	var blocks []string
+	live := 0
+	for _, t := range tickets {
+		c := newClient(server, t)
+		st, code, err := c.status()
+		switch {
+		case err == nil && code == http.StatusNotFound:
+			dropFromAgent(t)
+			blocks = append(blocks, "status: unknown ticket (stale entry dropped)\n")
+		case err != nil:
+			blocks = append(blocks, fmt.Sprintf("status: error: %v\n", err))
+		case code != http.StatusOK:
+			blocks = append(blocks, fmt.Sprintf("status: failed (%d): %s\n", code, st.Error))
+		default:
+			live++
+			blocks = append(blocks, renderStatus(st))
+		}
+	}
+	return strings.Join(blocks, "---\n"), live
 }
 
 // cmdRenew implements: opbroker renew [--server URL] [--ttl 1h]
