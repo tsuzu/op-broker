@@ -14,10 +14,11 @@ import (
 )
 
 // The client side of the ticket model: a ticket is a random bearer string
-// generated per session and kept only in the shell environment (never on
-// disk, never in a keychain). The server only ever sees its SHA-256 hash at
-// request time; the human approval on the web dashboard is what turns the
-// ticket into a time-boxed read grant.
+// generated per request and kept only in memory — either in the shell
+// environment (eval mode) or in the local agent daemon (agent.go). It is
+// never written to disk and never put in a keychain. The server only ever
+// sees its SHA-256 hash at request time; the human approval on the web
+// dashboard is what turns the ticket into a time-boxed read grant.
 
 func newTicket() (string, error) {
 	b := make([]byte, 32)
@@ -91,11 +92,15 @@ func (c *client) status() (*statusResp, int, error) {
 }
 
 // cmdRequest implements: opbroker request --server URL [--name N] [--reason R]
-// [--ttl 1h] [--wait 10m] op://... [op://...]
+// [--ttl 1h] [--wait 10m] [--agent] op://... [op://...]
+// With --agent, the approved ticket is handed to the local agent daemon
+// instead of being printed as an export line: no shell or tool ever has to
+// carry the ticket itself.
 func cmdRequest(args []string) error {
 	var server, name, reason string
 	var ttl, wait time.Duration = time.Hour, 10 * time.Minute
 	var scopes []string
+	useAgent := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--server":
@@ -104,6 +109,8 @@ func cmdRequest(args []string) error {
 		case "--name":
 			i++
 			name = args[i]
+		case "--agent":
+			useAgent = true
 		case "--reason":
 			i++
 			reason = args[i]
@@ -162,7 +169,10 @@ func cmdRequest(args []string) error {
 		return err
 	}
 	// The eval-able line goes to stdout; everything human-facing to stderr.
-	fmt.Printf("export BROKER_TICKET=%s\n", ticket)
+	// In agent mode nothing secret is printed at all.
+	if !useAgent {
+		fmt.Printf("export BROKER_TICKET=%s\n", ticket)
+	}
 	fmt.Fprintf(os.Stderr, "request %s created\n", resp.RequestID)
 	fmt.Fprintf(os.Stderr, "\n  確認コード: %s\n\n", resp.Code)
 	fmt.Fprintf(os.Stderr, "ダッシュボードでこのコードを承認してください。承認を待ちます（最大 %s）...\n", wait)
@@ -172,6 +182,17 @@ func cmdRequest(args []string) error {
 		if err == nil {
 			switch st.Status {
 			case "approved":
+				if useAgent {
+					exp, perr := time.Parse(time.RFC3339, st.GrantExpires)
+					if perr != nil {
+						exp = time.Now().Add(ttl)
+					}
+					if err := storeToAgent(ticket, exp); err != nil {
+						return fmt.Errorf("approved, but handing the ticket to the local agent failed: %w", err)
+					}
+					fmt.Fprintf(os.Stderr, "承認されました。有効期限: %s（残り読取 %d 回）\nチケットはローカルエージェントに預けました。以後の `opbroker read` / `opbroker status` はそのまま使えます。\n", st.GrantExpires, st.ReadsLeft)
+					return nil
+				}
 				fmt.Fprintf(os.Stderr, "承認されました。有効期限: %s（残り読取 %d 回）\n", st.GrantExpires, st.ReadsLeft)
 				return nil
 			case "denied":
@@ -201,9 +222,9 @@ func cmdRead(args []string) error {
 	if server == "" {
 		server = os.Getenv("BROKER_SERVER")
 	}
-	ticket := os.Getenv("BROKER_TICKET")
+	ticket := resolveTicket()
 	if ticket == "" {
-		return fmt.Errorf("BROKER_TICKET is not set; run `eval $(opbroker request ...)` first")
+		return fmt.Errorf("no ticket: set BROKER_TICKET or run `opbroker request --agent ...` first")
 	}
 	if ref == "" {
 		return fmt.Errorf("a secret reference op://Vault/Item/field is required")
@@ -236,9 +257,9 @@ func cmdStatus(args []string) error {
 			server = args[i]
 		}
 	}
-	ticket := os.Getenv("BROKER_TICKET")
+	ticket := resolveTicket()
 	if ticket == "" {
-		return fmt.Errorf("BROKER_TICKET is not set")
+		return fmt.Errorf("no ticket: set BROKER_TICKET or run `opbroker request --agent ...` first")
 	}
 	c := newClient(server, ticket)
 	st, code, err := c.status()

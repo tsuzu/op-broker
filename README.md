@@ -64,6 +64,23 @@ opbroker read op://Automation/demo/password
 opbroker status
 ```
 
+エージェント方式（推奨、特に Codex 等のツールから使う場合）:
+`request --agent` は承認されたチケットをローカルエージェント
+（ssh-agent と同じ発想の常駐プロセス）のメモリに預ける。以後の
+`read` / `status` は環境変数なしで動き、チケット文字列がシェル・
+ツール・コマンドラインに一切現れない。エージェントは grant の期限で
+チケットを破棄し、保持チケットが無い状態が10分続くと終了する。
+
+```sh
+opbroker request --agent --name codex --reason "作業名" op://Automation
+# 6桁コードをダッシュボードで承認するだけ
+opbroker read op://Automation/demo/password   # env 不要
+opbroker agent --forget   # 手動でチケットを捨てる
+opbroker agent --stop     # エージェント終了
+```
+
+`$BROKER_TICKET` が設定されていればそちらが優先される。
+
 scope は階層パターンで指定できる（承認した範囲内なら何度でも読める。
 TTL と read 回数上限は従来どおり効く）:
 

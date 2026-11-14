@@ -37,6 +37,8 @@ func main() {
 		err = cmdRead(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
+	case "agent":
+		err = cmdAgent(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -115,7 +117,8 @@ func cmdServe(args []string) error {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   opbroker serve   [--listen :18787] [--op /path/to/op] [--demo]
-  opbroker request --server URL [--name N] [--reason R] [--ttl 1h] [--wait 10m] op://... [op://...]
-  opbroker read    [--server URL] op://Vault/Item/field     (ticket from $BROKER_TICKET)
-  opbroker status  [--server URL]                           (ticket from $BROKER_SERVER/$BROKER_TICKET)`)
+  opbroker request --server URL [--name N] [--reason R] [--ttl 1h] [--wait 10m] [--agent] op://... [op://...]
+  opbroker read    [--server URL] op://Vault/Item/field     (ticket from $BROKER_TICKET or the local agent)
+  opbroker status  [--server URL]                           (ticket from $BROKER_TICKET or the local agent)
+  opbroker agent   [--stop|--forget]                        (local ticket daemon; started automatically by request --agent)`)
 }
