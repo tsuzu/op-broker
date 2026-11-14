@@ -27,8 +27,13 @@
   SHA-256 検証つきで取得して起動する（クラスタに private registry が
   ないための altkeeper と同じパターン）。状態は Pod のメモリのみで、
   PVC は使わない。
-  - 到達経路: LoadBalancer `http://10.24.0.202:18787`（infra net のみ、
-    インターネットには出していない）
+  - 到達経路: **`https://op.tsuzu.dev`**（Cloudflare の DNS-only A
+    レコード → LoadBalancer 10.24.0.202:443、infra net のみで
+    インターネットには出していない）。broker 自身が TLS を終端する
+  - 証明書は cert-manager の Let's Encrypt 証明書（DNS-01 検証）。
+    プライベート IP を指す名前でも公開信頼の証明書が取れるのが要点で、
+    更新時は Secret が差し替わり、broker が再起動なしで読み直す
+    （unlock 状態や grant は保持される）
   - Admin token は Pod 起動ごとに生成され Pod ログに一度だけ出る:
     `kubectl -n op-broker logs deploy/op-broker | grep "ADMIN TOKEN"`
 - クライアント: 同一バイナリ。Mac は `~/.local/bin/opbroker`
@@ -47,7 +52,7 @@
 クライアント（Mac）:
 
 ```sh
-export BROKER_SERVER=http://10.24.0.202:18787
+export BROKER_SERVER=https://op.tsuzu.dev
 eval $(opbroker request --name macbook-pro --reason "作業名" \
         op://Automation/demo/password)
 # 表示される6桁コードをダッシュボードで照合して承認すると進む
@@ -57,8 +62,8 @@ opbroker status
 
 ## 状態と既知の割り切り
 
-- v1 は平文 HTTP（Tailscale / WireGuard / 自宅 LAN の暗号化と信頼に依存）。
-  公開が必要になったら oauth2-proxy + Pocket ID を前段に置く。
+- 公開が必要になったら oauth2-proxy + Pocket ID を前段に置く
+  （現状は infra net 内のみで運用）。
 - サーバー再起動 = 全ロック。再 unlock と再承認が必要（仕様）。
 - バックエンドが人間アカウントの手動セッションではなく Service Account
   前提なのは、`op` のセッション鍵がディスク保存される設計と「メモリのみ」
