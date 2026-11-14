@@ -142,20 +142,57 @@ func pairingCode(hashHex string) string {
 	return fmt.Sprintf("%06d", n)
 }
 
+// validScope accepts exact references and broader patterns:
+//
+//	op://Vault/Item/field   one field (exact)
+//	op://Vault/Item         the whole item (all fields)
+//	op://Vault              the whole vault
+//	op://Vault/*            the whole vault (explicit wildcard)
+//	op://*                  everything the backend credential can see
+//
+// A "*" segment is only allowed as the final segment.
 func validScope(ref string) bool {
 	if !strings.HasPrefix(ref, "op://") {
 		return false
 	}
 	parts := strings.Split(strings.TrimPrefix(ref, "op://"), "/")
-	if len(parts) < 3 {
+	if len(parts) < 1 {
 		return false
 	}
-	for _, p := range parts {
+	for i, p := range parts {
 		if strings.TrimSpace(p) == "" {
+			return false
+		}
+		if p == "*" && i != len(parts)-1 {
 			return false
 		}
 	}
 	return true
+}
+
+// scopeMatches reports whether any granted scope pattern covers ref.
+// Matching is segment-aware: "op://Vault" does not match
+// "op://VaultEvil/...".
+func scopeMatches(scopes []string, ref string) bool {
+	for _, p := range scopes {
+		if patternMatches(p, ref) {
+			return true
+		}
+	}
+	return false
+}
+
+func patternMatches(pattern, ref string) bool {
+	if pattern == ref {
+		return true
+	}
+	if strings.HasSuffix(pattern, "/*") {
+		// Keep the trailing slash: "op://Vault/*" covers "op://Vault/…".
+		return strings.HasPrefix(ref, pattern[:len(pattern)-1])
+	}
+	// Hierarchical scope: a vault or item pattern covers everything
+	// below it at a segment boundary.
+	return strings.HasPrefix(ref, pattern+"/")
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +356,7 @@ func (s *server) handleRead(w http.ResponseWriter, r *http.Request) {
 		result = "locked"
 	case !gok || !g.active(now):
 		result = "expired"
-	case !contains(g.Scopes, body.Ref):
+	case !scopeMatches(g.Scopes, body.Ref):
 		result = "denied-scope"
 	default:
 		g.ReadsLeft--

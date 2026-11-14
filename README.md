@@ -15,7 +15,7 @@
 - **申請の真贋は6桁コードの目視照合で担保する。** クライアントが表示する
   コードとダッシュボードのコードが一致することを確認してから承認する
   （OAuth device flow と同じ型）。
-- grant は scope（`op://Vault/Item/field` の完全一致 allowlist）・TTL・
+- grant は scope（下記のパターン allowlist）・TTL・
   読取回数上限つき。read-only。監査ログ（ref と結果のみ、秘密の値は残さ
   ない）もメモリ内。
 
@@ -64,10 +64,23 @@ opbroker read op://Automation/demo/password
 opbroker status
 ```
 
+scope は階層パターンで指定できる（承認した範囲内なら何度でも読める。
+TTL と read 回数上限は従来どおり効く）:
+
+| scope | 読める範囲 |
+|---|---|
+| `op://Vault/Item/field` | そのフィールドだけ |
+| `op://Vault/Item` | そのアイテムの全フィールド |
+| `op://Vault` / `op://Vault/*` | その vault の全アイテム |
+| `op://*` | SA トークンが見える全部 |
+
+実際の上限は Service Account の vault 権限。広い scope を承認すると
+その分だけクライアントの権限が広がるので、理由と TTL は絞ること。
+
 ## 状態と既知の割り切り
 
-- 公開が必要になったら oauth2-proxy + Pocket ID を前段に置く
-  （現状は infra net 内のみで運用）。
+- ダッシュボードは Pocket ID ゲートの内側（上記）。インターネットには
+  出していない（infra net 内のみ）。
 - サーバー再起動 = 全ロック。再 unlock と再承認が必要（仕様）。
 - バックエンドが人間アカウントの手動セッションではなく Service Account
   前提なのは、`op` のセッション鍵がディスク保存される設計と「メモリのみ」
