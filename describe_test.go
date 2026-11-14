@@ -87,7 +87,7 @@ func TestParseOpItemFieldsDropsValues(t *testing.T) {
 	  "fields": [
 	    {"id": "f1", "type": "STRING", "label": "username", "value": "someone@example.com"},
 	    {"id": "f2", "type": "CONCEALED", "label": "password", "value": "p@ssw0rd"},
-	    {"id": "f3", "type": "OTP", "label": "totp-code", "value": "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP",
+	    {"id": "TOTP_abc123", "type": "OTP", "label": "totp-code", "value": "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP",
 	     "section": {"id": "s1", "label": "MFA"}}
 	  ]
 	}`)
@@ -110,6 +110,9 @@ func TestParseOpItemFieldsDropsValues(t *testing.T) {
 	}
 	if otp.OTPRef != "op://milldea/SMMR stg/MFA/totp-code?attribute=otp" {
 		t.Fatalf("otp_ref = %q", otp.OTPRef)
+	}
+	if otp.ID != "TOTP_abc123" || otp.OTPIDRef != "op://milldea/SMMR stg/TOTP_abc123?attribute=otp" {
+		t.Fatalf("otp id refs = %+v", otp)
 	}
 	if fields[0].Ref != "op://milldea/SMMR stg/username" {
 		t.Fatalf("username ref = %q", fields[0].Ref)

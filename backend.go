@@ -15,11 +15,13 @@ import (
 // carries a value — for OTP fields it deliberately omits the seed, so a
 // describe response is safe to show to the requesting client.
 type FieldInfo struct {
-	Section string `json:"section,omitempty"`
-	Label   string `json:"label"`
-	Type    string `json:"type"`
-	Ref     string `json:"ref"`
-	OTPRef  string `json:"otp_ref,omitempty"`
+	Section  string `json:"section,omitempty"`
+	Label    string `json:"label"`
+	Type     string `json:"type"`
+	ID       string `json:"id,omitempty"`
+	Ref      string `json:"ref"`
+	OTPRef   string `json:"otp_ref,omitempty"`
+	OTPIDRef string `json:"otp_id_ref,omitempty"`
 }
 
 // Backend abstracts where secrets actually come from. The server holds the
@@ -108,6 +110,7 @@ func (b *OpBackend) Describe(ctx context.Context, credential, vault, item string
 func parseOpItemFields(vault, item string, data []byte) ([]FieldInfo, error) {
 	var parsed struct {
 		Fields []struct {
+			ID      string `json:"id"`
 			Type    string `json:"type"`
 			Label   string `json:"label"`
 			Section *struct {
@@ -120,7 +123,7 @@ func parseOpItemFields(vault, item string, data []byte) ([]FieldInfo, error) {
 	}
 	fields := make([]FieldInfo, 0, len(parsed.Fields))
 	for _, f := range parsed.Fields {
-		fi := FieldInfo{Label: f.Label, Type: f.Type}
+		fi := FieldInfo{Label: f.Label, Type: f.Type, ID: f.ID}
 		ref := "op://" + vault + "/" + item + "/"
 		if f.Section != nil && f.Section.Label != "" {
 			fi.Section = f.Section.Label
@@ -130,6 +133,11 @@ func parseOpItemFields(vault, item string, data []byte) ([]FieldInfo, error) {
 		fi.Ref = ref
 		if f.Type == "OTP" {
 			fi.OTPRef = ref + "?attribute=otp"
+			// When two fields share one label, the label reference is
+			// ambiguous and op refuses it; the id reference always works.
+			if f.ID != "" {
+				fi.OTPIDRef = "op://" + vault + "/" + item + "/" + f.ID + "?attribute=otp"
+			}
 		}
 		fields = append(fields, fi)
 	}

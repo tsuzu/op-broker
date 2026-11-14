@@ -293,9 +293,15 @@ func cmdDescribe(args []string) error {
 		if f.Section != "" {
 			meta += ", section: " + f.Section
 		}
+		if f.ID != "" {
+			meta += ", id: " + f.ID
+		}
 		fmt.Println(meta)
 		if f.OTPRef != "" {
 			fmt.Printf("  current code: opbroker read %q\n", f.OTPRef)
+		}
+		if f.OTPIDRef != "" {
+			fmt.Printf("  current code (by id, for duplicate labels): opbroker read %q\n", f.OTPIDRef)
 		}
 	}
 	return nil
