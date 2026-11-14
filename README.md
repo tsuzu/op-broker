@@ -107,6 +107,35 @@ TTL と read 回数上限は従来どおり効く）:
 実際の上限は Service Account の vault 権限。広い scope を承認すると
 その分だけクライアントの権限が広がるので、理由と TTL は絞ること。
 
+## PWA とプッシュ通知（Firebase）
+
+ダッシュボードは PWA としてホーム画面に追加でき、新しい申請が来たら
+Firebase Cloud Messaging 経由で Web Push が届く（iPhone は iOS 16.4+
+でホーム画面に追加したアプリからのみ通知可）。
+
+有効化には serve へ2つのファイルを渡す:
+
+```
+opbroker serve --firebase-config firebase-config.json \
+               --fcm-credentials service-account.json ...
+```
+
+- `firebase-config.json`: Web アプリ設定（apiKey / authDomain /
+  projectId / storageBucket / messagingSenderId / appId）に Web Push
+  証明書の公開鍵 `vapidKey` を加えたもの。公開識別子のみで秘密はない。
+- `service-account.json`: FCM HTTP v1 送信用の Google サービス
+  アカウント鍵。サーバーは stdlib だけで RS256 JWT → OAuth2 トークン
+  交換 → messages:send を行う。
+
+挙動:
+
+- 通知はデータのみで送り、Service Worker が組み立てる。タイトル・
+  本文にクライアント名・ホスト・scope・理由を含み、**6桁の確認
+  コードはロック画面に漏らさないため含めない**（照合はアプリ内で）。
+- デバイストークンはメモリ内のみ。再起動で消えるが、ダッシュボード
+  を開くたび自動で再登録される。
+- FCM が UNREGISTERED を返したトークンは自動で掃除する。
+
 ## 状態と既知の割り切り
 
 - ダッシュボードは Pocket ID ゲートの内側（上記）。インターネットには

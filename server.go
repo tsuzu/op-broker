@@ -98,6 +98,14 @@ type server struct {
 	sessions   map[string]*adminSession
 	audit      []auditEntry
 
+	// Push notifications (optional; set by cmdServe when Firebase is
+	// configured). pushTokens holds FCM registration tokens in RAM
+	// only: a restart forgets them and the dashboard re-registers its
+	// token on every load.
+	firebaseCfg *firebaseWebConfig
+	fcm         *fcmClient
+	pushTokens  map[string]bool
+
 	// trustProxyHeader, when set (e.g. "X-Auth-Request-User"), treats a
 	// request as admin-authenticated if it carries that header AND arrives
 	// from a loopback address — i.e. from a reverse proxy in the same
@@ -276,6 +284,7 @@ func (s *server) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 	s.byTicket[req.TicketHash] = req
 	s.mu.Unlock()
 	log.Printf("request %s from client=%q host=%q src=%s scopes=%d code=%s", req.ID, req.ClientName, req.Host, req.SourceIP, len(req.Scopes), req.Code)
+	go s.notifyNewRequest(req)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"request_id": req.ID,
 		"code":       req.Code,
@@ -722,6 +731,11 @@ func (s *server) handleRevoke(w http.ResponseWriter, r *http.Request, sess *admi
 var dashTmpl = template.Must(template.New("dash").Parse(`<!DOCTYPE html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>op-broker</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>body{font-family:system-ui,sans-serif;max-width:860px;margin:2em auto;padding:0 1em}
 table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:.4em;text-align:left;vertical-align:top}
 code{font-size:.9em}.locked{color:#b00;font-weight:bold}.open{color:#070;font-weight:bold}
@@ -738,6 +752,53 @@ input,select,textarea{font-size:1em} .small{color:#666;font-size:.85em}</style><
 <label>1Password Service Account token（ops_...）を貼り付け — サーバーのメモリにだけ保持され、ディスクには書きません<br>
 <input type="password" name="credential" size="70" autocomplete="off"></label>
 <button type="submit">Unlock</button></form>
+{{end}}
+
+{{if .PushEnabled}}
+<div style="margin:1em 0">
+<button type="button" id="pushBtn">プッシュ通知を有効化（新しい申請を通知）</button>
+<span id="pushState" class="small"></span>
+<p class="small">iPhone では Safari の共有メニューから「ホーム画面に追加」し、追加したアイコンから開いた状態で有効化してください。</p>
+</div>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js"></script>
+<script>
+(function () {
+  var cfg = {{.FirebaseConfigJSON}};
+  var csrf = "{{.CSRF}}";
+  var state = document.getElementById('pushState');
+  function setState(t) { state.textContent = t; }
+  firebase.initializeApp(cfg);
+  var messaging = firebase.messaging();
+  var swReg = null;
+  function sendToken(tok) {
+    var body = new URLSearchParams({ csrf: csrf, token: tok });
+    fetch('/push/register', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body })
+      .then(function () { setState('通知は有効です'); })
+      .catch(function () { setState('トークン登録に失敗しました'); });
+  }
+  function refreshToken() {
+    if (!swReg) { return; }
+    messaging.getToken({ vapidKey: cfg.vapidKey, serviceWorkerRegistration: swReg })
+      .then(function (tok) { if (tok) { sendToken(tok); } else { setState('トークンが取得できませんでした'); } })
+      .catch(function (e) { setState('トークン取得に失敗: ' + e.message); });
+  }
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/firebase-messaging-sw.js').then(function (r) {
+      swReg = r;
+      if (window.Notification && Notification.permission === 'granted') { refreshToken(); }
+    }).catch(function (e) { setState('Service Worker 登録に失敗: ' + e.message); });
+  }
+  document.getElementById('pushBtn').addEventListener('click', function () {
+    if (!('Notification' in window)) { setState('このブラウザは通知に対応していません'); return; }
+    Notification.requestPermission().then(function (p) {
+      if (p !== 'granted') { setState('通知が許可されませんでした'); return; }
+      refreshToken();
+    });
+  });
+  messaging.onMessage(function () { setTimeout(function () { location.reload(); }, 800); });
+})();
+</script>
 {{end}}
 
 <h2>承認待ちリクエスト</h2>
@@ -799,6 +860,11 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		"Unlocked": s.credential != "",
 		"Demo":     s.demo,
 	}
+	if s.firebaseCfg != nil && s.fcm != nil {
+		cfgJSON, _ := json.Marshal(s.firebaseCfg)
+		data["PushEnabled"] = true
+		data["FirebaseConfigJSON"] = template.JS(cfgJSON)
+	}
 	var pending []*accessRequest
 	for _, req := range s.requests {
 		if req.Status == stPending {
@@ -856,5 +922,12 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/approve", admin(s.handleApprove))
 	mux.HandleFunc("/deny", admin(s.handleDeny))
 	mux.HandleFunc("/revoke", admin(s.handleRevoke))
+	mux.HandleFunc("/push/register", admin(s.handlePushRegister))
+	mux.HandleFunc("/push/unregister", admin(s.handlePushUnregister))
+	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)
+	mux.HandleFunc("/icon-192.png", iconHandler(icon192PNG))
+	mux.HandleFunc("/icon-512.png", iconHandler(icon512PNG))
+	mux.HandleFunc("/apple-touch-icon.png", iconHandler(appleTouchIconPNG))
+	mux.HandleFunc("/firebase-messaging-sw.js", s.handleServiceWorker)
 	return mux
 }

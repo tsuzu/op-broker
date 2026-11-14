@@ -72,6 +72,8 @@ func cmdServe(args []string) error {
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (PEM); with --tls-key, serve HTTPS with hot reload on file change")
 	tlsKey := fs.String("tls-key", "", "TLS private key file (PEM)")
 	trustProxyHeader := fs.String("trust-proxy-header", "", "comma-separated headers set by a loopback authenticating proxy (e.g. X-Forwarded-User,X-Auth-Request-User); loopback requests carrying one are admin-authenticated")
+	firebaseConfig := fs.String("firebase-config", "", "path to Firebase web config JSON (with vapidKey); with --fcm-credentials, enables PWA push notifications on new requests")
+	fcmCredentials := fs.String("fcm-credentials", "", "path to a Google service account JSON used to send FCM messages")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -89,6 +91,33 @@ func cmdServe(args []string) error {
 	}
 	s := newServer(backend, *demo, adminToken)
 	s.trustProxyHeader = *trustProxyHeader
+	if (*firebaseConfig == "") != (*fcmCredentials == "") {
+		return fmt.Errorf("--firebase-config and --fcm-credentials must be given together")
+	}
+	if *firebaseConfig != "" {
+		cfgData, err := os.ReadFile(*firebaseConfig)
+		if err != nil {
+			return fmt.Errorf("firebase config: %w", err)
+		}
+		cfg, err := loadFirebaseConfig(cfgData)
+		if err != nil {
+			return err
+		}
+		saData, err := os.ReadFile(*fcmCredentials)
+		if err != nil {
+			return fmt.Errorf("fcm credentials: %w", err)
+		}
+		fc, err := newFCMClient(saData)
+		if err != nil {
+			return err
+		}
+		if fc.project != cfg.ProjectID {
+			return fmt.Errorf("firebase project mismatch: config %q vs service account %q", cfg.ProjectID, fc.project)
+		}
+		s.firebaseCfg = cfg
+		s.fcm = fc
+		log.Printf("push notifications enabled (firebase project %s)", cfg.ProjectID)
+	}
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           s.routes(),
