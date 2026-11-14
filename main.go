@@ -41,6 +41,8 @@ func main() {
 		err = cmdStatus(os.Args[2:])
 	case "renew":
 		err = cmdRenew(os.Args[2:])
+	case "ssh-add":
+		err = cmdSSHAdd(os.Args[2:])
 	case "agent":
 		err = cmdAgent(os.Args[2:])
 	default:
@@ -155,5 +157,6 @@ func usage() {
   opbroker describe [--server URL] op://Vault/Item          (field structure, metadata only)
   opbroker status  [--server URL]                           (ticket from $BROKER_TICKET or the local agent)
   opbroker renew   [--server URL] [--ttl 1h] [--wait 10m] [op://scope]   (extend a grant's life; owner approval required)
+  opbroker ssh-add [--server URL] [--lifetime 1h] op://Vault/Item/private key   (load a 1Password SSH key into ssh-agent)
   opbroker agent   [--stop|--forget|--list]                 (local ticket daemon; started automatically by request --agent)`)
 }

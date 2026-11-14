@@ -106,6 +106,24 @@ opbroker renew op://milldea    # カバーする grant を指定して更新
 opbroker renew --ttl 2h        # 延長幅の希望（最終決定は承認時）
 ```
 
+### SSH 鍵を ssh-agent へ（ssh-add）
+
+1Password 内の SSH 鍵も、同じ承認モデルのままローカルの ssh-agent
+で使える。秘密鍵は broker 経由で OpenSSH 形式のまま取得され、
+`ssh-add` の標準入力に渡るだけで、ディスクには書かれず表示も
+されない。agent 側の有効期間はデフォルトで grant の残り時間に
+一致する（`--lifetime` で変更可）。
+
+```sh
+opbroker request --agent op://MyVault        # 未承認なら先に承認
+opbroker describe op://MyVault/my-server     # 鍵フィールドの参照を確認
+opbroker ssh-add "op://MyVault/my-server/private key"
+ssh-add -l                                   # 投入されたことを確認
+```
+
+対象アイテムは Service Account から見えるボールトに置くこと
+（鍵フィールドの参照はアイテムにより異なるので describe で確認）。
+
 ### スコープの後追加（オーナー操作）
 
 ダッシュボードの有効な grant 一覧から、各 grant にスコープ参照を

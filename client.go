@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -319,6 +321,103 @@ func cmdRead(args []string) error {
 		return fmt.Errorf("read refused (%d): %s", code, resp.Error)
 	}
 	fmt.Println(resp.Value)
+	return nil
+}
+
+// sshFormatRef returns ref with the OpenSSH rendering requested:
+// 1Password serves an SSH key item's private key in OpenSSH format
+// when the reference carries ?ssh-format=openssh.
+func sshFormatRef(ref string) string {
+	if strings.Contains(ref, "ssh-format=") {
+		return ref
+	}
+	if strings.Contains(ref, "?") {
+		return ref + "&ssh-format=openssh"
+	}
+	return ref + "?ssh-format=openssh"
+}
+
+// cmdSSHAdd implements: opbroker ssh-add [--server URL]
+// [--lifetime 1h] op://Vault/Item/private key
+//
+// It brings a 1Password-held SSH key into the local ssh-agent under
+// the same approval grant as reads: the private key is fetched
+// through the broker (OpenSSH format) and handed to `ssh-add` over
+// stdin — it never touches disk and is never printed. The agent
+// lifetime defaults to the grant's remaining lifetime, so the key
+// stops working when the grant does.
+func cmdSSHAdd(args []string) error {
+	var server, ref string
+	var lifetime time.Duration
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--server":
+			i++
+			server = args[i]
+		case "--lifetime":
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil {
+				return err
+			}
+			lifetime = d
+		default:
+			ref = args[i]
+		}
+	}
+	if server == "" {
+		server = os.Getenv("BROKER_SERVER")
+	}
+	if ref == "" {
+		return fmt.Errorf("an SSH key field reference is required, e.g. op://Vault/Item/private key (see `opbroker describe`)")
+	}
+	if os.Getenv("SSH_AUTH_SOCK") == "" {
+		return fmt.Errorf("SSH_AUTH_SOCK is not set: no ssh-agent to add the key to")
+	}
+	ticket := resolveLiveTicket(server, ref)
+	if ticket == "" {
+		return fmt.Errorf("no live ticket covers %s: run `opbroker request --agent ...` first", ref)
+	}
+	c := newClient(server, ticket)
+	if lifetime <= 0 {
+		lifetime = time.Hour
+		if st, code, err := c.status(); err == nil && code == http.StatusOK && st.GrantExpires != "" {
+			if exp, perr := time.Parse(time.RFC3339, st.GrantExpires); perr == nil {
+				if rem := time.Until(exp); rem > 0 {
+					lifetime = rem
+				}
+			}
+		}
+	}
+	code, data, err := c.doJSON(http.MethodPost, "/api/read", map[string]string{"ref": sshFormatRef(ref)}, true)
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		Value string `json:"value"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("bad read response: %s", data)
+	}
+	if code != http.StatusOK {
+		return fmt.Errorf("read refused (%d): %s", code, resp.Error)
+	}
+	key := resp.Value
+	if !strings.HasSuffix(key, "\n") {
+		key += "\n"
+	}
+	secs := int(lifetime.Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	add := exec.Command("ssh-add", "-t", strconv.Itoa(secs), "-")
+	add.Stdin = strings.NewReader(key)
+	out, err := add.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ssh-add failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	fmt.Fprintf(os.Stderr, "ssh-agent に投入しました（%s）。有効期間: %s\n", strings.TrimSpace(string(out)), lifetime.Round(time.Second))
 	return nil
 }
 
