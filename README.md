@@ -106,6 +106,19 @@ opbroker renew op://milldea    # カバーする grant を指定して更新
 opbroker renew --ttl 2h        # 延長幅の希望（最終決定は承認時）
 ```
 
+### プッシュ通知先の永続化（任意）
+
+既定では通知先（FCM デバイストークン）もメモリのみで、再起動で
+消える（ダッシュボードを開くと再登録される）。`--push-token-s3`
+を指定すると **トークンだけ** を S3 上の小さな JSON に同期し、
+再起動をまたいで保持する。認証は Web Identity（Pod の projected
+SA トークン→ STS で一時認証情報に交換）で、静的な鍵は置かない。
+SA トークン・grant・監査ログは従来通りメモリのみ。
+
+```sh
+opbroker serve --push-token-s3 http://10.24.0.138:8333/op-broker/push-tokens.json
+```
+
 ### SSH 鍵を ssh-agent へ（ssh-add）
 
 1Password 内の SSH 鍵も、同じ承認モデルのままローカルの ssh-agent

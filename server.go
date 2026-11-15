@@ -113,6 +113,9 @@ type server struct {
 	firebaseCfg *firebaseWebConfig
 	fcm         *fcmClient
 	pushTokens  map[string]bool
+	// persister, when set, mirrors pushTokens to durable storage
+	// (S3) so device registrations survive restarts. See persist.go.
+	persister *pushPersister
 
 	// trustProxyHeader, when set (e.g. "X-Auth-Request-User"), treats a
 	// request as admin-authenticated if it carries that header AND arrives

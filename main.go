@@ -78,6 +78,9 @@ func cmdServe(args []string) error {
 	trustProxyHeader := fs.String("trust-proxy-header", "", "comma-separated headers set by a loopback authenticating proxy (e.g. X-Forwarded-User,X-Auth-Request-User); loopback requests carrying one are admin-authenticated")
 	firebaseConfig := fs.String("firebase-config", "", "path to Firebase web config JSON (with vapidKey); with --fcm-credentials, enables PWA push notifications on new requests")
 	fcmCredentials := fs.String("fcm-credentials", "", "path to a Google service account JSON used to send FCM messages")
+	pushTokenS3 := fs.String("push-token-s3", "", "S3 object URL for persisting push device tokens, e.g. http://10.24.0.138:8333/op-broker/push-tokens.json (SeaweedFS, Web Identity; empty = RAM only)")
+	pushTokenRoleArn := fs.String("push-token-role-arn", "arn:aws:iam::123456789012:role/S3AdminRole", "STS role ARN for the push-token store")
+	webIdentityTokenFile := fs.String("web-identity-token-file", "/var/run/secrets/seaweedfs/token", "projected ServiceAccount token file (audience seaweedfs) for the push-token store")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -121,6 +124,16 @@ func cmdServe(args []string) error {
 		s.firebaseCfg = cfg
 		s.fcm = fc
 		log.Printf("push notifications enabled (firebase project %s)", cfg.ProjectID)
+	}
+	if *pushTokenS3 != "" {
+		store, err := newS3TokenStore(*pushTokenS3, *pushTokenRoleArn, *webIdentityTokenFile)
+		if err != nil {
+			return err
+		}
+		s.persister = &pushPersister{store: store, get: s.pushTokenList}
+		s.loadPushTokens()
+		go s.persister.run()
+		log.Printf("push token store enabled (%s)", *pushTokenS3)
 	}
 	srv := &http.Server{
 		Addr:              *listen,

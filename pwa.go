@@ -126,6 +126,7 @@ func (s *server) handlePushRegister(w http.ResponseWriter, r *http.Request, sess
 	s.pushTokens[token] = true
 	n := len(s.pushTokens)
 	s.mu.Unlock()
+	s.markPushDirty()
 	log.Printf("push device registered (%d total)", n)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "devices": n})
 }
@@ -139,6 +140,7 @@ func (s *server) handlePushUnregister(w http.ResponseWriter, r *http.Request, se
 	s.mu.Lock()
 	delete(s.pushTokens, token)
 	s.mu.Unlock()
+	s.markPushDirty()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -177,6 +179,7 @@ func (s *server) notifyNewRequest(req *accessRequest) {
 				s.mu.Lock()
 				delete(s.pushTokens, t)
 				s.mu.Unlock()
+				s.markPushDirty()
 				log.Printf("push device pruned (unregistered)")
 			}
 		}
